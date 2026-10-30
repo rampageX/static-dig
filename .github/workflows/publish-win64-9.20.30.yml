@@ -1,0 +1,71 @@
+name: Publish verified Windows dig 9.20.30
+
+# Publish exactly the binary that passed native Windows CI and user's Win11 tests.
+# This one-time workflow never rebuilds or replaces the Linux assets.
+on:
+  push:
+    branches: [experiment/windows-native]
+    paths:
+      - '.github/workflows/publish-win64-9.20.30.yml'
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    name: Add verified Win64 binary to existing Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Verify the source CI run completed successfully
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          result="$(gh run view 41044124400 --repo "$GITHUB_REPOSITORY" --json conclusion --jq '.conclusion')"
+          test "$result" = "success"
+      - name: Retrieve the exact Windows-tested executable
+        uses: actions/download-artifact@v7
+        with:
+          name: dig-win64-experimental
+          run-id: 41044124400
+          github-token: ${{ github.token }}
+          path: dist
+      - name: Verify portable PE file and prepare checksums
+        working-directory: dist
+        run: |
+          test -s dig.exe
+          file dig.exe
+          file dig.exe | grep -q 'PE32+ executable'
+          mv dig.exe dig_win64_static_9.20.30.exe
+          sha256sum dig_win64_static_9.20.30.exe > SHA256SUMS_win64
+      - name: Add Windows assets without replacing existing Release files
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view v9.20.30 --repo "$GITHUB_REPOSITORY" >/dev/null
+          existing="$(gh release view v9.20.30 --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          for asset in dig_win64_static_9.20.30.exe SHA256SUMS_win64; do
+            if printf '%s\n' "$existing" | grep -Fxq "$asset"; then
+              echo "Already published: $asset (left untouched)"
+            else
+              gh release upload v9.20.30 "$asset" --repo "$GITHUB_REPOSITORY"
+            fi
+          done
+      - name: Append Windows verification notes without removing Linux release notes
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view v9.20.30 --repo "$GITHUB_REPOSITORY" --json body --jq .body > current-notes.md
+          if grep -Fq 'Windows x64 (native)' current-notes.md; then
+            echo 'Release notes already mention Windows; skipped.'
+          else
+            printf '\n### Windows x64 (native)\n\n' >> current-notes.md
+            printf '%s\n' '- dig_win64_static_9.20.30.exe: standalone PE32+ executable for Windows x64; third-party dependencies statically linked, standard Windows system DLLs required.' >> current-notes.md
+            printf '%s\n' '- Verified on GitHub Windows Server 2025 and a Windows 11 PC: version, DNS-over-TLS (DoT) and DNS-over-HTTPS (DoH), all with successful responses and TLS certificate verification.' >> current-notes.md
+            printf '%s\n' '- Windows uses the OS ROOT certificate store. Check the file hash in SHA256SUMS_win64; the existing SHA256SUMS covers the two Linux binaries.' >> current-notes.md
+            printf '%s\n' '- CI: https://github.com/rampageX/static-dig/actions/runs/41044124400' >> current-notes.md
+            gh release edit v9.20.30 --repo "$GITHUB_REPOSITORY" --title 'BIND dig 9.20.30 · Linux ARMv5TE / x86_64 + Windows x64' --notes-file current-notes.md
+          fi
