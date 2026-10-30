@@ -147,10 +147,13 @@ def main() -> None:
         return
 
     digest = authenticated_sha256(version)
+    # A branch/PR build is a test, never an automatic GitHub Release.
+    publish = not exists and os.environ.get("GITHUB_REF", "refs/heads/main") == "refs/heads/main"
+    publish = publish and event != "pull_request"
     append_outputs({
         "version": version,
         "build": "true",
-        "publish": "false" if exists or event == "pull_request" else "true",
+        "publish": "true" if publish else "false",
         "source_sha256": digest,
     })
 

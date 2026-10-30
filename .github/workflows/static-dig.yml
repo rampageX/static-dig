@@ -17,7 +17,8 @@ on:
         default: false
         type: boolean
   push:
-    branches: [main]
+    # Also validate automation maintenance branches before merging to main.
+    branches: [main, 'automation/**']
     paths:
       - '.github/workflows/static-dig.yml'
       - 'bind_dig_*.sh'
