@@ -103,24 +103,35 @@ jobs:
           cd bind-9.20.30
           autoreconf --install
           export CPPFLAGS="-I${GITHUB_WORKSPACE}/windows/bind-compat -include ${GITHUB_WORKSPACE}/windows/bind-compat/legacy-types.h"
+          # Build only live functions into the portable dig image.
+          export CFLAGS="-O2 -ffunction-sections -fdata-sections -D_UCRT -mcrtdll=ucrt"
+          export LDFLAGS="-Wl,--gc-sections -mcrtdll=ucrt"
           ./configure --target=x86_64-w64-mingw32 --host=x86_64-w64-mingw32 \
             PKG_CONFIG_PATH=/ucrt64/lib/pkgconfig \
             OPENSSL_CFLAGS='-I/ucrt64/include' \
             OPENSSL_LIBS='-L/ucrt64/lib -lcrypto -lssl' \
             --with-zlib=no
-          make -k -j4
+          # BIND's full upstream dig link may still request excluded named-only
+          # modules. Require the compiled archives before doing our own link.
+          if ! make -k -j4; then
+            test -s bin/dig/dig.o
+            test -s bin/dig/.libs/libdighost.a
+            test -s lib/isc/.libs/libisc.a
+            test -s lib/dns/.libs/libdns.a
+            test -s lib/isccfg/.libs/libisccfg.a
+          fi
       - name: Link standalone Windows executable
         run: |
           cd bind-9.20.30/bin/dig
           x86_64-w64-mingw32-gcc -O2 -s -o ../../../dig.exe \
-            dig.o ./.libs/libdighost.a -pthread -D_UCRT -mcrtdll=ucrt \
-            -Wl,--dynamicbase,--high-entropy-va,--nxcompat \
+            dig.o -pthread -D_UCRT -mcrtdll=ucrt \
+            -Wl,--dynamicbase,--high-entropy-va,--nxcompat,--gc-sections \
             -Wl,--start-group \
+            ./.libs/libdighost.a \
+            ../../lib/isccfg/.libs/libisccfg.a \
+            ../../lib/dns/.libs/libdns.a \
+            ../../lib/isc/.libs/libisc.a \
             /usr/x86_64-w64-mingw32/lib/libwinpthread.a \
-            ../../lib/isc/.libs/libisc_la-*.o \
-            ../../lib/isc/netmgr/.libs/libisc_la-*.o \
-            ../../lib/dns/.libs/libdns_la-*.o \
-            ../../lib/isccfg/.libs/libisccfg_la-*.o \
             /ucrt64/lib/libuv.a \
             /ucrt64/lib/libssl.a /ucrt64/lib/libcrypto.a /ucrt64/lib/libnghttp2.a \
             -lws2_32 -lpsapi -liphlpapi -luserenv -luser32 -ldbghelp -lole32 -lshell32 -lcrypt32 -lsynchronization \
