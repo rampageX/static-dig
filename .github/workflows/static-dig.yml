@@ -49,7 +49,7 @@ jobs:
       publish: ${{ steps.isc.outputs.publish }}
       source_sha256: ${{ steps.isc.outputs.source_sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check release selector and script syntax
         run: |
           python3 -m unittest discover -s tests -v
@@ -79,7 +79,7 @@ jobs:
       BIND_VERSION: ${{ needs.detect.outputs.version }}
       JOBS: '2'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install build and QEMU test dependencies
         run: |
           sudo apt-get update -qq
@@ -123,7 +123,7 @@ jobs:
           fi
 
       - name: Upload verified binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dig-${{ matrix.arch }}
           path: /tmp/static-dig-build/${{ matrix.arch }}_result/dig_${{ matrix.arch }}_static_${{ needs.detect.outputs.version }}
@@ -139,7 +139,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: dig-*
           merge-multiple: true
