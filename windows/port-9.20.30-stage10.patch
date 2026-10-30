@@ -1,0 +1,59 @@
+--- a/lib/dns/Makefile.am
++++ b/lib/dns/Makefile.am
+@@ -154,6 +154,7 @@
+ 	ede.c				\
+ 	fixedname.c			\
+ 	forward.c			\
++	gssapictx.c			\
+ 	hmac_link.c			\
+ 	ipkeylist.c			\
+ 	iptable.c			\
+
+--- a/lib/dns/db.c
++++ b/lib/dns/db.c
+@@ -950,6 +950,45 @@
+ 	return ISC_R_NOTFOUND;
+ }
+ 
++dns_stats_t *
++dns_db_getrrsetstats(dns_db_t *db) {
++	REQUIRE(DNS_DB_VALID(db));
++
++	if (db->methods->getrrsetstats != NULL) {
++		return (db->methods->getrrsetstats)(db);
++	}
++
++	return NULL;
++}
++
++isc_result_t
++dns_db_setcachestats(dns_db_t *db, isc_stats_t *stats) {
++	REQUIRE(DNS_DB_VALID(db));
++
++	if (db->methods->setcachestats != NULL) {
++		return (db->methods->setcachestats)(db, stats);
++	}
++
++	return ISC_R_NOTIMPLEMENTED;
++}
++
++isc_result_t
++dns_db_getnsec3parameters(dns_db_t *db, dns_dbversion_t *version,
++			  dns_hash_t *hash, uint8_t *flags,
++			  uint16_t *iterations, unsigned char *salt,
++			  size_t *salt_length) {
++	REQUIRE(DNS_DB_VALID(db));
++	REQUIRE(dns_db_iszone(db));
++
++	if (db->methods->getnsec3parameters != NULL) {
++		return (db->methods->getnsec3parameters)(db, version, hash,
++							 flags, iterations,
++							 salt, salt_length);
++	}
++
++	return ISC_R_NOTFOUND;
++}
++
+ isc_result_t
+ dns_db_getsize(dns_db_t *db, dns_dbversion_t *version, uint64_t *records,
+ 	       uint64_t *bytes) {

@@ -100,6 +100,8 @@ jobs:
           patch --batch -p1 < ../windows/port-9.20.30-stage7.patch
           # Restore DNS resolver and zone support required by linked BIND modules.
           patch --batch -p1 < ../windows/port-9.20.30-stage9.patch
+          # Re-enable 9.20 DNS DB statistics and no-GSSAPI stubs.
+          patch --batch -p1 < ../windows/port-9.20.30-stage10.patch
       - name: Cross-configure and compile
         run: |
           cd bind-9.20.30
