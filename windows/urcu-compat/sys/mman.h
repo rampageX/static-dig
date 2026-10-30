@@ -38,7 +38,8 @@ static inline void *mmap(void *addr, size_t length, int prot, int flags,
     allocation = (flags & MAP_FIXED) ? MEM_COMMIT :
                  (prot == PROT_NONE ? MEM_RESERVE : MEM_RESERVE | MEM_COMMIT);
     result = VirtualAlloc(addr, length, allocation,
-                          prot == PROT_NONE ? PAGE_NOACCESS : PAGE_READWRITE);
+                          prot == PROT_NONE ? PAGE_NOACCESS :
+                          ((prot & PROT_WRITE) ? PAGE_READWRITE : PAGE_READONLY));
     if (!result || ((flags & MAP_FIXED) && result != addr)) {
         errno = ENOMEM;
         return MAP_FAILED;
@@ -58,7 +59,8 @@ static inline int mprotect(void *addr, size_t length, int prot)
 {
     DWORD old_protection;
     if (VirtualProtect(addr, length,
-                       prot == PROT_NONE ? PAGE_NOACCESS : PAGE_READWRITE,
+                       prot == PROT_NONE ? PAGE_NOACCESS :
+                       ((prot & PROT_WRITE) ? PAGE_READWRITE : PAGE_READONLY),
                        &old_protection)) return 0;
     errno = EINVAL;
     return -1;

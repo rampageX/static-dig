@@ -1,0 +1,215 @@
+diff --git a/lib/isc/include/isc/log.h b/lib/isc/include/isc/log.h
+index 916a741..7497f5b 100644
+--- a/lib/isc/include/isc/log.h
++++ b/lib/isc/include/isc/log.h
+@@ -769,6 +769,13 @@ isc_log_setcontext(isc_log_t *lctx);
+  *\li	lctx be a valid context.
+  */
+ 
++/* Windows build: syslog maps to stderr, and there are no named file logs. */
++void
++isc_log_opensyslog(const char *tag, int options, int facility);
++
++void
++isc_log_closefilelogs(isc_log_t *lctx);
++
+ isc_result_t
+ isc_logfile_roll(isc_logfile_t *file);
+ /*%<
+diff --git a/lib/isc/log.c b/lib/isc/log.c
+index 5d277de..8e52ed6 100644
+--- a/lib/isc/log.c
++++ b/lib/isc/log.c
+@@ -419,21 +419,6 @@ isc_logconfig_destroy(isc_logconfig_t **lcfgp) {
+ 	while ((channel = ISC_LIST_HEAD(lcfg->channels)) != NULL) {
+ 		ISC_LIST_UNLINK(lcfg->channels, channel, link);
+ 
+-		if (channel->type == ISC_LOG_TOFILE) {
+-			/*
+-			 * The filename for the channel may have ultimately
+-			 * started its life in user-land as a const string,
+-			 * but in isc_log_createchannel it gets copied
+-			 * into writable memory and is not longer truly const.
+-			 */
+-			filename = UNCONST(FILE_NAME(channel));
+-			isc_mem_free(mctx, filename);
+-
+-			if (FILE_STREAM(channel) != NULL) {
+-				(void)fclose(FILE_STREAM(channel));
+-			}
+-		}
+-
+ 		isc_mem_free(mctx, channel->name);
+ 		isc_mem_put(mctx, channel, sizeof(*channel));
+ 	}
+@@ -776,31 +761,6 @@ isc_log_setdebuglevel(isc_log_t *lctx, unsigned int level) {
+ 	REQUIRE(VALID_CONTEXT(lctx));
+ 
+ 	atomic_store_release(&lctx->debug_level, level);
+-	/*
+-	 * Close ISC_LOG_DEBUGONLY channels if level is zero.
+-	 */
+-	if (level == 0) {
+-		rcu_read_lock();
+-		isc_logconfig_t *lcfg = rcu_dereference(lctx->logconfig);
+-		if (lcfg != NULL) {
+-			LOCK(&lctx->lock);
+-			for (isc_logchannel_t *channel =
+-				     ISC_LIST_HEAD(lcfg->channels);
+-			     channel != NULL;
+-			     channel = ISC_LIST_NEXT(channel, link))
+-			{
+-				if (channel->type == ISC_LOG_TOFILE &&
+-				    (channel->flags & ISC_LOG_DEBUGONLY) != 0 &&
+-				    FILE_STREAM(channel) != NULL)
+-				{
+-					(void)fclose(FILE_STREAM(channel));
+-					FILE_STREAM(channel) = NULL;
+-				}
+-			}
+-			UNLOCK(&lctx->lock);
+-		}
+-		rcu_read_unlock();
+-	}
+ }
+ 
+ unsigned int
+@@ -857,24 +817,7 @@ isc_log_opensyslog(const char *tag, int options, int facility) {
+ void
+ isc_log_closefilelogs(isc_log_t *lctx) {
+ 	REQUIRE(VALID_CONTEXT(lctx));
+-
+-	rcu_read_lock();
+-	isc_logconfig_t *lcfg = rcu_dereference(lctx->logconfig);
+-	if (lcfg != NULL) {
+-		LOCK(&lctx->lock);
+-		for (isc_logchannel_t *channel = ISC_LIST_HEAD(lcfg->channels);
+-		     channel != NULL; channel = ISC_LIST_NEXT(channel, link))
+-		{
+-			if (channel->type == ISC_LOG_TOFILE &&
+-			    FILE_STREAM(channel) != NULL)
+-			{
+-				(void)fclose(FILE_STREAM(channel));
+-				FILE_STREAM(channel) = NULL;
+-			}
+-		}
+-		UNLOCK(&lctx->lock);
+-	}
+-	rcu_read_unlock();
++	/* Native Windows dig uses only stderr and caller-owned file streams. */
+ }
+ 
+ /****
+@@ -951,6 +894,8 @@ sync_highest_level(isc_log_t *lctx, isc_logconfig_t *lcfg) {
+ 	atomic_store(&lctx->dynamic, lcfg->dynamic);
+ }
+ 
++/* File-name log rotation is intentionally excluded from native Windows dig. */
++#if !defined(_WIN32)
+ static isc_result_t
+ greatest_version(isc_logfile_t *file, int versions, int *greatestp) {
+ 	char *digit_end;
+@@ -1307,6 +1252,8 @@ roll_timestamp(isc_logfile_t *file) {
+ 	return ISC_R_SUCCESS;
+ }
+ 
++#endif /* !_WIN32 */
++
+ isc_result_t
+ isc_logfile_roll(isc_logfile_t *file) {
+ 	REQUIRE(file != NULL);
+diff --git a/lib/isc/loop.c b/lib/isc/loop.c
+index 141d954..3e90278 100644
+--- a/lib/isc/loop.c
++++ b/lib/isc/loop.c
+@@ -48,6 +48,7 @@
+ 
+ thread_local isc_loop_t *isc__loop_local = NULL;
+ 
++#if !defined(_WIN32)
+ static void
+ ignore_signal(int sig, void (*handler)(int)) {
+ 	struct sigaction sa = { .sa_handler = handler };
+@@ -56,6 +57,7 @@ ignore_signal(int sig, void (*handler)(int)) {
+ 		FATAL_SYSERROR(errno, "ignore_signal(%d)", sig);
+ 	}
+ }
++#endif
+ 
+ void
+ isc_loopmgr_shutdown(isc_loopmgr_t *loopmgr) {
+@@ -459,7 +461,9 @@ isc_loopmgr_run(isc_loopmgr_t *loopmgr) {
+ 	/*
+ 	 * Always ignore SIGPIPE.
+ 	 */
++#if !defined(_WIN32)
+ 	ignore_signal(SIGPIPE, SIG_IGN);
++#endif
+ 
+ 	/*
+ 	 * The thread 0 is this one.
+diff --git a/lib/isc/net.c b/lib/isc/net.c
+index b311790..23455dd 100644
+--- a/lib/isc/net.c
++++ b/lib/isc/net.c
+@@ -23,7 +23,9 @@
+ #include <errno.h>
+ #include <fcntl.h>
+ #include <netdb.h>
++#if !defined(_WIN32)
+ #include <sys/uio.h>
++#endif
+ #include <unistd.h>
+ 
+ #include <isc/log.h>
+diff --git a/lib/isc/os.c b/lib/isc/os.c
+index 0c5f2c8..7ef6064 100644
+--- a/lib/isc/os.c
++++ b/lib/isc/os.c
+@@ -14,7 +14,9 @@
+ #include <ctype.h>
+ #include <inttypes.h>
+ #include <sys/stat.h>
++#if !defined(_WIN32)
+ #include <sys/utsname.h>
++#endif
+ 
+ #include <isc/os.h>
+ #include <isc/string.h>
+@@ -166,6 +168,10 @@ umask_initialize(void) {
+ 
+ static void
+ kernel_initialize(void) {
++#if defined(_WIN32)
++	/* uname() does not exist in native Windows; don't fake a kernel version. */
++	(void)strlcpy(kernel_name, "Windows", sizeof(kernel_name));
++#else
+ 	struct utsname buffer;
+ 
+ 	if (uname(&buffer) == -1) {
+@@ -175,6 +181,7 @@ kernel_initialize(void) {
+ 	(void)sscanf(buffer.release, "%d.%d.%d", &kernel_major, &kernel_minor,
+ 		     &kernel_patch);
+ 	(void)strlcpy(kernel_name, buffer.sysname, sizeof(kernel_name));
++#endif
+ }
+ 
+ unsigned int
+diff --git a/lib/isccfg/Makefile.am b/lib/isccfg/Makefile.am
+index 0866305..714a298 100644
+--- a/lib/isccfg/Makefile.am
++++ b/lib/isccfg/Makefile.am
+@@ -27,13 +27,11 @@ libisccfg_la_CPPFLAGS =			\
+ 	$(LIBISCCFG_CFLAGS)		\
+ 	$(LIBISC_CFLAGS)		\
+ 	$(LIBDNS_CFLAGS)		\
+-	$(LIBNS_CFLAGS)			\
+ 	$(OPENSSL_CFLAGS)
+ 
+ libisccfg_la_LIBADD =	\
+ 	$(LIBDNS_LIBS)	\
+ 	$(LIBISC_LIBS)	\
+-	$(LIBNS_LIBS)	\
+ 	$(OPENSSL_LIBS)
+ 
+ libisccfg_la_LDFLAGS =		\
