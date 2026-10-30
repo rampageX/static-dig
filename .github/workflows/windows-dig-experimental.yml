@@ -65,6 +65,7 @@ jobs:
         run: |
           cd bind-9.20.30
           autoreconf --install
+          export CPPFLAGS="-I${GITHUB_WORKSPACE}/windows/bind-compat"
           ./configure --target=x86_64-w64-mingw32 --host=x86_64-w64-mingw32 \
             PKG_CONFIG_PATH=/ucrt64/lib/pkgconfig \
             OPENSSL_CFLAGS='-I/ucrt64/include' \
