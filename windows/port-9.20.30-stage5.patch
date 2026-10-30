@@ -1,0 +1,796 @@
+diff --git a/lib/isccfg/Makefile.am b/lib/isccfg/Makefile.am
+index 714a298..9a82544 100644
+--- a/lib/isccfg/Makefile.am
++++ b/lib/isccfg/Makefile.am
+@@ -15,7 +15,6 @@ libisccfg_la_HEADERS =			\
+ libisccfg_la_SOURCES =			\
+ 	$(libisccfg_la_HEADERS)		\
+ 	aclconf.c			\
+-	check.c				\
+ 	dnsconf.c			\
+ 	duration.c			\
+ 	log.c				\
+
+--- a/lib/isc/netmgr/http.c
++++ b/lib/isc/netmgr/http.c
+@@ -205,6 +205,18 @@
+ 	uint64_t processed_useful_data; /* DNS data */
+ };
+ 
++typedef enum isc_http_error_responses {
++	ISC_HTTP_ERROR_SUCCESS,		       /* 200 */
++	ISC_HTTP_ERROR_NOT_FOUND,	       /* 404 */
++	ISC_HTTP_ERROR_PAYLOAD_TOO_LARGE,      /* 413 */
++	ISC_HTTP_ERROR_URI_TOO_LONG,	       /* 414 */
++	ISC_HTTP_ERROR_UNSUPPORTED_MEDIA_TYPE, /* 415 */
++	ISC_HTTP_ERROR_BAD_REQUEST,	       /* 400 */
++	ISC_HTTP_ERROR_NOT_IMPLEMENTED,	       /* 501 */
++	ISC_HTTP_ERROR_GENERIC,		       /* 500 Internal Server Error */
++	ISC_HTTP_ERROR_MAX
++} isc_http_error_responses_t;
++
+ typedef struct isc_http_send_req {
+ 	isc_nm_http_session_t *session;
+ 	isc_nmhandle_t *transphandle;
+@@ -247,12 +259,23 @@
+ http_do_bio_async(isc_nm_http_session_t *session);
+ 
+ static void
++failed_httpstream_read_cb(isc_nmsocket_t *sock, isc_result_t result,
++			  isc_nm_http_session_t *session);
++
++static void
+ client_call_failed_read_cb(isc_result_t result, isc_nm_http_session_t *session);
+ 
+ static void
++server_call_failed_read_cb(isc_result_t result, isc_nm_http_session_t *session);
++
++static void
+ failed_read_cb(isc_result_t result, isc_nm_http_session_t *session);
+ 
+ static isc_result_t
++server_send_error_response(const isc_http_error_responses_t error,
++			   nghttp2_session *ngsession, isc_nmsocket_t *socket);
++
++static isc_result_t
+ client_send(isc_nmhandle_t *handle, const isc_region_t *region);
+ 
+ static void
+@@ -265,11 +288,19 @@
+ call_pending_callbacks(isc__nm_http_pending_callbacks_t pending_callbacks,
+ 		       isc_result_t result);
+ 
++static void
++server_call_cb(isc_nmsocket_t *socket, const isc_result_t result,
++	       isc_region_t *data);
++
+ static isc_nm_httphandler_t *
+ http_endpoints_find(const char *request_path,
+ 		    const isc_nm_http_endpoints_t *restrict eps);
+ 
+ static void
++http_init_listener_endpoints(isc_nmsocket_t *listener,
++			     isc_nm_http_endpoints_t *epset);
++
++static void
+ http_cleanup_listener_endpoints(isc_nmsocket_t *listener);
+ 
+ static isc_nm_http_endpoints_t *
+@@ -551,7 +582,7 @@
+ 		if (session->client) {
+ 			client_call_failed_read_cb(ISC_R_UNEXPECTED, session);
+ 		} else {
+-			UNREACHABLE();
++			server_call_failed_read_cb(ISC_R_UNEXPECTED, session);
+ 		}
+ 
+ 		call_pending_callbacks(session->pending_write_callbacks,
+@@ -2755,7 +2786,7 @@
+ 	if (session != NULL && session->client) {
+ 		client_httpsend(handle, sock, req);
+ 	} else {
+-		UNREACHABLE();
++		server_httpsend(handle, sock, req);
+ 	}
+ }
+ 
+@@ -3281,7 +3312,11 @@
+ 			finish_http_session(session);
+ 		}
+ 	} else {
+-		UNREACHABLE();
++		server_call_failed_read_cb(result, session);
++		/*
++		 * All streams are now destroyed; close the session.
++		 */
++		finish_http_session(session);
+ 	}
+ }
+ 
+@@ -3834,6 +3869,177 @@
+ #define ADVANCE()      st->str++
+ #define GETP()	       (st->str)
+ 
++static bool
++rule_query_string(isc_httpparser_state_t *st);
++
++bool
++isc__nm_parse_httpquery(const char *query_string, const char **start,
++			size_t *len) {
++	isc_httpparser_state_t state;
++
++	REQUIRE(start != NULL);
++	REQUIRE(len != NULL);
++
++	if (query_string == NULL || query_string[0] == '\0') {
++		return false;
++	}
++
++	state = (isc_httpparser_state_t){ .str = query_string };
++	if (!rule_query_string(&state)) {
++		return false;
++	}
++
++	if (!state.query_found) {
++		return false;
++	}
++
++	*start = state.query;
++	*len = state.query_len;
++
++	return true;
++}
++
++static bool
++rule_key_value_pair(isc_httpparser_state_t *st);
++
++static bool
++rule_key(isc_httpparser_state_t *st);
++
++static bool
++rule_value(isc_httpparser_state_t *st);
++
++static bool
++rule_value_char(isc_httpparser_state_t *st);
++
++static bool
++rule_percent_charcode(isc_httpparser_state_t *st);
++
++static bool
++rule_unreserved_char(isc_httpparser_state_t *st);
++
++static bool
++rule_query_string(isc_httpparser_state_t *st) {
++	if (MATCH('?')) {
++		ADVANCE();
++	}
++
++	while (rule_key_value_pair(st)) {
++		/* skip */;
++	}
++
++	if (!MATCH('\0')) {
++		return false;
++	}
++
++	ADVANCE();
++	return true;
++}
++
++static bool
++rule_key_value_pair(isc_httpparser_state_t *st) {
++	if (!rule_key(st)) {
++		return false;
++	}
++
++	if (MATCH('=')) {
++		ADVANCE();
++	} else {
++		return false;
++	}
++
++	if (rule_value(st)) {
++		const char dns[] = "dns";
++		if (st->last_key_len == sizeof(dns) - 1 &&
++		    memcmp(st->last_key, dns, sizeof(dns) - 1) == 0)
++		{
++			st->query_found = true;
++			st->query = st->last_value;
++			st->query_len = st->last_value_len;
++		}
++	} else {
++		return false;
++	}
++
++	if (MATCH('&')) {
++		ADVANCE();
++	}
++
++	return true;
++}
++
++static bool
++rule_key(isc_httpparser_state_t *st) {
++	if (MATCH('_') || MATCH_ALPHA()) {
++		st->last_key = GETP();
++		ADVANCE();
++	} else {
++		return false;
++	}
++
++	while (MATCH('_') || MATCH_ALNUM()) {
++		ADVANCE();
++	}
++
++	st->last_key_len = GETP() - st->last_key;
++	return true;
++}
++
++static bool
++rule_value(isc_httpparser_state_t *st) {
++	const char *s = GETP();
++	if (!rule_value_char(st)) {
++		return false;
++	}
++
++	st->last_value = s;
++	while (rule_value_char(st)) {
++		/* skip */;
++	}
++	st->last_value_len = GETP() - st->last_value;
++	return true;
++}
++
++static bool
++rule_value_char(isc_httpparser_state_t *st) {
++	if (rule_unreserved_char(st)) {
++		return true;
++	}
++
++	return rule_percent_charcode(st);
++}
++
++static bool
++rule_unreserved_char(isc_httpparser_state_t *st) {
++	if (MATCH_ALNUM() || MATCH('_') || MATCH('.') || MATCH('-') ||
++	    MATCH('~'))
++	{
++		ADVANCE();
++		return true;
++	}
++	return false;
++}
++
++static bool
++rule_percent_charcode(isc_httpparser_state_t *st) {
++	if (MATCH('%')) {
++		ADVANCE();
++	} else {
++		return false;
++	}
++
++	if (!MATCH_XDIGIT()) {
++		return false;
++	}
++	ADVANCE();
++
++	if (!MATCH_XDIGIT()) {
++		return false;
++	}
++	ADVANCE();
++
++	return true;
++}
++
+ /*
+  * DoH URL Location Verifier. Based on the following grammar (EBNF/WSN
+  * notation):
+
+--- a/lib/isc/netmgr/netmgr-int.h
++++ b/lib/isc/netmgr/netmgr-int.h
+@@ -33,6 +33,7 @@
+ #include <isc/region.h>
+ #include <isc/result.h>
+ #include <isc/sockaddr.h>
++#include <isc/stats.h>
+ #include <isc/thread.h>
+ #include <isc/tid.h>
+ #include <isc/time.h>
+@@ -577,6 +578,11 @@
+ 	isc_job_t quotacb;
+ 
+ 	/*%
++	 * Socket statistics
++	 */
++	const isc_statscounter_t *statsindex;
++
++	/*%
+ 	 * TCP read/connect timeout timers.
+ 	 */
+ 	uv_timer_t read_timer;
+@@ -1300,6 +1306,18 @@
+ isc__nm_proxyudp_send(isc_nmhandle_t *handle, isc_region_t *region,
+ 		      isc_nm_cb_t cb, void *cbarg);
+ 
++void
++isc__nm_incstats(isc_nmsocket_t *sock, isc__nm_statid_t id);
++/*%<
++ * Increment socket-related statistics counters.
++ */
++
++void
++isc__nm_decstats(isc_nmsocket_t *sock, isc__nm_statid_t id);
++/*%<
++ * Decrement socket-related statistics counters.
++ */
++
+ isc_result_t
+ isc__nm_socket(int domain, int type, int protocol, uv_os_sock_t *sockp);
+ /*%<
+
+--- a/lib/isc/netmgr/netmgr.c
++++ b/lib/isc/netmgr/netmgr.c
+@@ -709,7 +709,10 @@
+ 	};
+ 
+ 	if (iface != NULL) {
++		family = iface->type.sa.sa_family;
+ 		sock->iface = *iface;
++	} else {
++		family = AF_UNSPEC;
+ 	}
+ 
+ 	if (parent) {
+@@ -773,6 +776,8 @@
+ 			 sock, isc_refcount_current(&sock->references));
+ 
+ 	sock->magic = NMSOCK_MAGIC;
++
++	isc__nm_incstats(sock, STATID_ACTIVE);
+ }
+ 
+ void
+@@ -1043,6 +1048,8 @@
+ 
+ 	sock->connecting = false;
+ 
++	isc__nm_incstats(sock, STATID_CONNECTFAIL);
++
+ 	isc__nmsocket_timer_stop(sock);
+ 	uv_handle_set_data((uv_handle_t *)&sock->read_timer, sock);
+ 
+@@ -2163,7 +2170,7 @@
+ 		return;
+ #if HAVE_LIBNGHTTP2
+ 	case isc_nm_httpsocket:
+-		UNREACHABLE();
++		isc__nm_http_bad_request(handle);
+ 		return;
+ #endif /* HAVE_LIBNGHTTP2 */
+ 	default:
+
+--- a/lib/isc/netmgr/tcp.c
++++ b/lib/isc/netmgr/tcp.c
+@@ -108,6 +108,7 @@
+ 		isc__nm_incstats(sock, STATID_OPENFAIL);
+ 		return isc_uverr2result(r);
+ 	}
++	isc__nm_incstats(sock, STATID_OPEN);
+ 
+ 	if (req->local.length != 0) {
+ 		r = uv_tcp_bind(&sock->uv_handle.tcp, &req->local.type.sa, 0);
+@@ -194,6 +195,7 @@
+ 	isc__nmsocket_timer_stop(sock);
+ 	uv_handle_set_data((uv_handle_t *)&sock->read_timer, sock);
+ 
++	isc__nm_incstats(sock, STATID_CONNECT);
+ 	r = uv_tcp_getpeername(&sock->uv_handle.tcp, (struct sockaddr *)&ss,
+ 			       &(int){ sizeof(ss) });
+ 	if (r != 0) {
+@@ -343,8 +345,10 @@
+ 	r = uv_tcp_open(&sock->uv_handle.tcp, sock->fd);
+ 	if (r < 0) {
+ 		isc__nm_closesocket(sock->fd);
++		isc__nm_incstats(sock, STATID_OPENFAIL);
+ 		goto done;
+ 	}
++	isc__nm_incstats(sock, STATID_OPEN);
+ 
+ 	if (sa_family == AF_INET6) {
+ 		flags = UV_TCP_IPV6ONLY;
+@@ -354,6 +358,7 @@
+ 		r = isc__nm_tcp_freebind(&sock->uv_handle.tcp,
+ 					 &sock->iface.type.sa, flags);
+ 		if (r < 0) {
++			isc__nm_incstats(sock, STATID_BINDFAIL);
+ 			goto done;
+ 		}
+ 	} else if (sock->tid == 0) {
+@@ -1217,6 +1222,8 @@
+ 	sock->closed = true;
+ 	sock->connected = false;
+ 
++	isc__nm_incstats(sock, STATID_CLOSE);
++
+ 	if (sock->server != NULL) {
+ 		if (sock->server->pquota != NULL) {
+ 			isc__nm_decstats(sock, STATID_CLIENTS);
+
+--- a/lib/isc/netmgr/udp.c
++++ b/lib/isc/netmgr/udp.c
+@@ -127,8 +127,10 @@
+ 	r = uv_udp_open(&sock->uv_handle.udp, sock->fd);
+ 	if (r < 0) {
+ 		isc__nm_closesocket(sock->fd);
++		isc__nm_incstats(sock, STATID_OPENFAIL);
+ 		goto done;
+ 	}
++	isc__nm_incstats(sock, STATID_OPEN);
+ 
+ 	if (sa_family == AF_INET6) {
+ 		uv_bind_flags |= UV_UDP_IPV6ONLY;
+@@ -139,6 +141,7 @@
+ 					 &sock->parent->iface.type.sa,
+ 					 uv_bind_flags);
+ 		if (r < 0) {
++			isc__nm_incstats(sock, STATID_BINDFAIL);
+ 			goto done;
+ 		}
+ 	} else if (sock->tid == 0) {
+@@ -161,6 +164,7 @@
+ 	r = uv_udp_recv_start(&sock->uv_handle.udp, isc__nm_alloc_cb,
+ 			      isc__nm_udp_read_cb);
+ 	if (r != 0) {
++		isc__nm_incstats(sock, STATID_BINDFAIL);
+ 		goto done;
+ 	}
+ 
+@@ -768,6 +772,7 @@
+ 		isc__nm_incstats(sock, STATID_OPENFAIL);
+ 		return isc_uverr2result(r);
+ 	}
++	isc__nm_incstats(sock, STATID_OPEN);
+ 
+ 	/*
+ 	 * uv_udp_open() enables REUSE_ADDR, we need to disable it again.
+@@ -805,6 +810,7 @@
+ 		isc__nm_incstats(sock, STATID_CONNECTFAIL);
+ 		return isc_uverr2result(r);
+ 	}
++	isc__nm_incstats(sock, STATID_CONNECT);
+ 
+ 	return ISC_R_SUCCESS;
+ }
+
+--- a/lib/dns/cache.c
++++ b/lib/dns/cache.c
+@@ -20,6 +20,7 @@
+ #include <isc/mem.h>
+ #include <isc/refcount.h>
+ #include <isc/result.h>
++#include <isc/stats.h>
+ #include <isc/string.h>
+ #include <isc/time.h>
+ #include <isc/timer.h>
+@@ -33,6 +34,16 @@
+ #include <dns/rdata.h>
+ #include <dns/rdataset.h>
+ #include <dns/rdatasetiter.h>
++#include <dns/stats.h>
++
++#ifdef HAVE_JSON_C
++#include <json_object.h>
++#endif /* HAVE_JSON_C */
++
++#ifdef HAVE_LIBXML2
++#include <libxml/xmlwriter.h>
++#define ISC_XMLCHAR (const xmlChar *)
++#endif /* HAVE_LIBXML2 */
+ 
+ #define CACHE_MAGIC	   ISC_MAGIC('$', '$', '$', '$')
+ #define VALID_CACHE(cache) ISC_MAGIC_VALID(cache, CACHE_MAGIC)
+@@ -68,6 +79,7 @@
+ 	size_t size;
+ 	dns_ttl_t serve_stale_ttl;
+ 	dns_ttl_t serve_stale_refresh;
++	isc_stats_t *stats;
+ 	uint32_t maxrrperset;
+ 	uint32_t maxtypepername;
+ };
+@@ -505,6 +517,37 @@
+ 	return result;
+ }
+ 
++isc_stats_t *
++dns_cache_getstats(dns_cache_t *cache) {
++	REQUIRE(VALID_CACHE(cache));
++	return cache->stats;
++}
++
++void
++dns_cache_updatestats(dns_cache_t *cache, isc_result_t result) {
++	REQUIRE(VALID_CACHE(cache));
++	if (cache->stats == NULL) {
++		return;
++	}
++
++	switch (result) {
++	case ISC_R_SUCCESS:
++	case DNS_R_NCACHENXDOMAIN:
++	case DNS_R_NCACHENXRRSET:
++	case DNS_R_CNAME:
++	case DNS_R_DNAME:
++	case DNS_R_GLUE:
++	case DNS_R_ZONECUT:
++	case DNS_R_COVERINGNSEC:
++		isc_stats_increment(cache->stats,
++				    dns_cachestatscounter_queryhits);
++		break;
++	default:
++		isc_stats_increment(cache->stats,
++				    dns_cachestatscounter_querymisses);
++	}
++}
++
+ void
+ dns_cache_setmaxrrperset(dns_cache_t *cache, uint32_t value) {
+ 	REQUIRE(VALID_CACHE(cache));
+@@ -531,6 +574,7 @@
+  * called from both places.
+  */
+ typedef struct cache_dumparg {
++	isc_statsformat_t type;
+ 	void *arg;		 /* type dependent argument */
+ 	int ncounters;		 /* for general statistics */
+ 	int *counterindices;	 /* for general statistics */
+
+--- a/lib/dns/dispatch.c
++++ b/lib/dns/dispatch.c
+@@ -29,7 +29,7 @@
+ #include <isc/netmgr.h>
+ #include <isc/portset.h>
+ #include <isc/random.h>
+-#include <isc/sockaddr.h>
++#include <isc/stats.h>
+ #include <isc/string.h>
+ #include <isc/tid.h>
+ #include <isc/time.h>
+@@ -60,6 +60,7 @@
+ 	isc_refcount_t references;
+ 	isc_mem_t *mctx;
+ 	dns_acl_t *blackhole;
++	isc_stats_t *stats;
+ 	isc_nm_t *nm;
+ 
+ 	unsigned int reuse_timeout;
+@@ -276,6 +277,20 @@
+ }
+ 
+ static void
++inc_stats(dns_dispatchmgr_t *mgr, isc_statscounter_t counter) {
++	if (mgr->stats != NULL) {
++		isc_stats_increment(mgr->stats, counter);
++	}
++}
++
++static void
++dec_stats(dns_dispatchmgr_t *mgr, isc_statscounter_t counter) {
++	if (mgr->stats != NULL) {
++		isc_stats_decrement(mgr->stats, counter);
++	}
++}
++
++static void
+ dispatch_log(dns_dispatch_t *disp, int level, const char *fmt, ...)
+ 	ISC_FORMAT_PRINTF(3, 4);
+ 
+@@ -1107,6 +1122,10 @@
+ 		dns_acl_detach(&mgr->blackhole);
+ 	}
+ 
++	if (mgr->stats != NULL) {
++		isc_stats_detach(&mgr->stats);
++	}
++
+ 	if (mgr->v4ports != NULL) {
+ 		isc_mem_cput(mgr->mctx, mgr->v4ports, mgr->nv4ports,
+ 			     sizeof(in_port_t));
+
+--- a/lib/dns/dns64.c
++++ b/lib/dns/dns64.c
+@@ -21,6 +21,7 @@
+ #include <isc/string.h>
+ #include <isc/util.h>
+ 
++#include <dns/acl.h>
+ #include <dns/dns64.h>
+ #include <dns/rdata.h>
+ #include <dns/rdataset.h>
+
+--- a/lib/dns/dnssec.c
++++ b/lib/dns/dnssec.c
+@@ -30,6 +30,7 @@
+ #include <dns/diff.h>
+ #include <dns/dnssec.h>
+ #include <dns/fixedname.h>
++#include <dns/kasp.h>
+ #include <dns/keyvalues.h>
+ #include <dns/log.h>
+ #include <dns/message.h>
+@@ -37,8 +38,11 @@
+ #include <dns/rdatalist.h>
+ #include <dns/rdataset.h>
+ #include <dns/rdatastruct.h>
++#include <dns/stats.h>
+ #include <dns/tsig.h> /* for DNS_TSIG_FUDGE */
+ 
++isc_stats_t *dns_dnssec_stats;
++
+ #define is_response(msg) ((msg->flags & DNS_MESSAGEFLAG_QR) != 0)
+ 
+ #define TYPE_SIGN   0
+@@ -61,6 +65,13 @@
+ 	return dst_context_adddata(ctx, data);
+ }
+ 
++static void
++inc_stat(isc_statscounter_t counter) {
++	if (dns_dnssec_stats != NULL) {
++		isc_stats_increment(dns_dnssec_stats, counter);
++	}
++}
++
+ /*
+  * Make qsort happy.
+  */
+@@ -429,6 +440,7 @@
+ 	}
+ 
+ 	if (isc_serial_lt(sig.timeexpire, sig.timesigned)) {
++		inc_stat(dns_dnssecstats_fail);
+ 		return DNS_R_SIGINVALID;
+ 	}
+ 
+@@ -439,8 +451,10 @@
+ 		 * Is SIG temporally valid?
+ 		 */
+ 		if (isc_serial_lt((uint32_t)now, sig.timesigned)) {
++			inc_stat(dns_dnssecstats_fail);
+ 			return DNS_R_SIGFUTURE;
+ 		} else if (isc_serial_lt(sig.timeexpire, (uint32_t)now)) {
++			inc_stat(dns_dnssecstats_fail);
+ 			return DNS_R_SIGEXPIRED;
+ 		}
+ 	}
+@@ -469,16 +483,19 @@
+ 	case dns_rdatatype_soa:
+ 	case dns_rdatatype_dnskey:
+ 		if (!dns_name_equal(name, &sig.signer)) {
++			inc_stat(dns_dnssecstats_fail);
+ 			return DNS_R_SIGINVALID;
+ 		}
+ 		break;
+ 	case dns_rdatatype_ds:
+ 		if (dns_name_equal(name, &sig.signer)) {
++			inc_stat(dns_dnssecstats_fail);
+ 			return DNS_R_SIGINVALID;
+ 		}
+ 		FALLTHROUGH;
+ 	default:
+ 		if (!dns_name_issubdomain(name, &sig.signer)) {
++			inc_stat(dns_dnssecstats_fail);
+ 			return DNS_R_SIGINVALID;
+ 		}
+ 		break;
+@@ -598,6 +615,9 @@
+ 			      "successfully validated after lower casing "
+ 			      "signer '%s'",
+ 			      namebuf);
++		inc_stat(dns_dnssecstats_downcase);
++	} else if (ret == ISC_R_SUCCESS) {
++		inc_stat(dns_dnssecstats_asis);
+ 	}
+ 
+ cleanup_array:
+
+--- a/lib/dns/message.c
++++ b/lib/dns/message.c
+@@ -33,9 +33,7 @@
+ #include <isc/util.h>
+ #include <isc/work.h>
+ 
+-#include <dns/acl.h>
+ #include <dns/dnssec.h>
+-#include <dns/fixedname.h>
+ #include <dns/keyvalues.h>
+ #include <dns/log.h>
+ #include <dns/masterdump.h>
+@@ -49,6 +47,7 @@
+ #include <dns/soa.h>
+ #include <dns/tsig.h>
+ #include <dns/ttl.h>
++#include <dns/view.h>
+ 
+ #ifdef SKAN_MSG_DEBUG
+ static void
+@@ -4479,60 +4478,6 @@
+ 						ADD_STRING(target, " (bad)");
+ 					}
+ 					ADD_STRING(target, "\n");
+-					if (optlen < 8) {
+-						continue;
+-					}
+-					/* show client & server cookies */
+-					ADD_STRING(target, ";  CLIENT COOKIE: ");
+-					if (!utf8ok) {
+-						for (i = 0; i < 8; i++) {
+-							snprintf(buf, sizeof(buf),
+-								 "%02x", optdata[i]);
+-							ADD_STRING(target, buf);
+-						}
+-					} else {
+-						ADD_STRING(target, "(indecipherable)");
+-					}
+-					ADD_STRING(target, "\n");
+-					ADD_STRING(target, ";  SERVER COOKIE: ");
+-					if (!utf8ok) {
+-						for (i = 8; i < optlen; i++) {
+-							snprintf(buf, sizeof(buf),
+-								 "%02x", optdata[i]);
+-							ADD_STRING(target, buf);
+-						}
+-					} else {
+-						ADD_STRING(target, "(indecipherable)");
+-					}
+-					if (optlen > 8) {
+-						snprintf(buf, sizeof(buf),
+-							 " (%u bytes)", optlen - 8);
+-						ADD_STRING(target, buf);
+-					} else {
+-						ADD_STRING(target, "(not set)");
+-					}
+-					ADD_STRING(target, "\n");
+-					if (!utf8ok) {
+-						if (optlen == 24 &&
+-						    memcmp(optdata + 8, "\x01\x00\x00\x00", 4) == 0)
+-						{
+-							uint32_t timestamp;
+-							memmove((char *)&timestamp, optdata + 12, 4);
+-							timestamp = ntohl(timestamp);
+-							ADD_STRING(target, ";   RFC 9018: "
+-									   "timestamp=");
+-							snprintf(buf, sizeof(buf),
+-								 "%u", timestamp);
+-							ADD_STRING(target, buf);
+-							ADD_STRING(target, ", hash=");
+-							for (i = 16; i < 24; i++) {
+-								snprintf(buf, sizeof(buf),
+-									 "%02x", optdata[i]);
+-								ADD_STRING(target, buf);
+-							}
+-							ADD_STRING(target, "\n");
+-						}
+-					}
+ 					continue;
+ 				}
+ 
+--- a/lib/isc/Makefile.am
++++ b/lib/isc/Makefile.am
+@@ -170,6 +170,7 @@
+ 	serial.c		\
+ 	signal.c		\
+ 	sockaddr.c		\
++	stats.c			\
+ 	stdio.c			\
+ 	stdtime.c		\
+ 	string.c		\
+--- a/lib/dns/Makefile.am
++++ b/lib/dns/Makefile.am
+@@ -201,6 +201,7 @@
+ 	sdlz.c				\
+ 	skr.c				\
+ 	soa.c				\
++	stats.c				\
+ 	time.c				\
+ 	transport.c			\
+ 	tkey.c				\

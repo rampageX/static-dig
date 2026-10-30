@@ -92,6 +92,8 @@ jobs:
           patch --batch -p1 < ../windows/port-9.20.30-stage3.patch
           # Retain upstream 9.20 type declarations required by newer DNS modules.
           patch --batch -p1 < ../windows/port-9.20.30-stage4.patch
+          # Restore network manager, HTTP, DNS and statistics paths to 9.20.
+          patch --batch -p1 < ../windows/port-9.20.30-stage5.patch
       - name: Cross-configure and compile
         run: |
           cd bind-9.20.30
