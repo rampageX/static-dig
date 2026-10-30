@@ -43,8 +43,13 @@ jobs:
           patch --batch -p1 < ../windows/urcu-compat/win32-signals.patch
           export CFLAGS="-O2 -I${GITHUB_WORKSPACE}/windows/urcu-compat"
           ./configure --host=x86_64-w64-mingw32 --prefix=/ucrt64 --enable-static --disable-shared --enable-compiler-atomic-builtins
-          make -j4
-          make install
+          # dig links only the standard RCU and CDS libraries; omit the
+          # bulletproof/signal flavors that require POSIX signal sets.
+          make -C src -j4 liburcu-common.la liburcu.la liburcu-cds.la
+          make -C include install-data
+          mkdir -p /ucrt64/lib/pkgconfig
+          install -m644 src/.libs/liburcu-common.a src/.libs/liburcu.a src/.libs/liburcu-cds.a /ucrt64/lib/
+          install -m644 src/liburcu.pc src/liburcu-cds.pc /ucrt64/lib/pkgconfig/
       - name: Download authenticated-version ISC source
         run: |
           curl -fL --retry 3 -o bind-9.20.30.tar.xz https://downloads.isc.org/isc/bind9/9.20.30/bind-9.20.30.tar.xz
