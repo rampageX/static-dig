@@ -1,26 +1,21 @@
 diff --git a/Makefile.am b/Makefile.am
-index 9a81318..7ef78b7 100644
+index 9a81318..7bf6e64 100644
 --- a/Makefile.am
 +++ b/Makefile.am
-@@ -1,15 +1,9 @@
+@@ -1,12 +1,6 @@
  include $(top_srcdir)/Makefile.top
  
 -SUBDIRS = . lib doc
-+SUBDIRS = . lib bin
- 
+-
 -# build libtest before fuzz/* and bin/tests
 -SUBDIRS += tests
 -
 -# run fuzz tests before system tests
 -SUBDIRS += fuzz bin
--
--BUILT_SOURCES += bind.keys.h
--CLEANFILES += bind.keys.h
-+BUILT_SOURCES = bind.keys.h
-+CLEANFILES = bind.keys.h
++SUBDIRS = . lib bin
  
- bind.keys.h: bind.keys Makefile
- 	${PERL} ${top_srcdir}/util/bindkeys.pl ${top_srcdir}/bind.keys > $@
+ BUILT_SOURCES += bind.keys.h
+ CLEANFILES += bind.keys.h
 diff --git a/Makefile.top b/Makefile.top
 index da95a2d..6d5413f 100644
 --- a/Makefile.top
