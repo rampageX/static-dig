@@ -2,24 +2,25 @@
 
 [![Build and release static dig](https://github.com/rampageX/static-dig/actions/workflows/static-dig.yml/badge.svg)](https://github.com/rampageX/static-dig/actions/workflows/static-dig.yml)
 
-**ISC BIND 9 `dig`：完全静态链接、单文件、跨 Linux 发行版运行。**
+**ISC BIND 9 `dig`：Linux 完全静态版 + Windows x64 原生单文件版。**
 
-只构建 DNS 查询工具 `dig`，不构建 DNS 服务器 `named`。支持普通 DNS、DNSSEC、DNS-over-TLS (DoT) 和 DNS-over-HTTPS (DoH)。采用 musl libc，不依赖目标系统安装 BIND、OpenSSL 或 nghttp2 的动态库。
+只构建 DNS 查询工具 `dig`，不构建 DNS 服务器 `named`。支持普通 DNS、DNSSEC、DNS-over-TLS (DoT) 和 DNS-over-HTTPS (DoH)。Linux 版采用 musl libc；Windows 版使用原生 UCRT。两类产物均无需额外安装 BIND、OpenSSL 或 nghttp2 动态库。
 
-**English:** Standalone, fully static musl builds of ISC BIND 9 `dig` for ARMv5TE soft-float and portable x86_64. DNS, DNSSEC, DoT and DoH are enabled. `named` and runtime-loadable plugins are **not** built. See [Releases](https://github.com/rampageX/static-dig/releases) for binaries and SHA256 checksums.
+**English:** Fully static musl builds of ISC BIND 9 `dig` for ARMv5TE and x86_64 Linux, plus a native Windows x64 single-file executable (BIND 9.20.30). DNS, DNSSEC, DoT and DoH are enabled. `named` and runtime-loadable plugins are **not** built. See [Releases](https://github.com/rampageX/static-dig/releases) for binaries and SHA256 checksums.
 
 ## 下载与架构
 
-从 [Releases](https://github.com/rampageX/static-dig/releases) 下载与 CPU 对应的文件及 `SHA256SUMS`：
+从 [Releases](https://github.com/rampageX/static-dig/releases) 下载对应文件；Linux 用 `SHA256SUMS`、Windows 用 `SHA256SUMS_win64` 校验：
 
 | 架构 | 发布文件 | 适用场景 |
 | --- | --- | --- |
 | ARMv5TE / ARM EABI5 / soft-float | `dig_armv5te_static_9.20.X` | 老款 Tomato/OpenWrt Linux ARM 路由器；能够执行 32 位 ARM 程序的 ARMv7、ARM64 Linux |
 | x86_64 / x86-64-v1 | `dig_x86_64_static_9.20.X` | x86_64 Linux VPS、服务器、Alpine/Debian/Ubuntu 等 |
+| Windows x64 / UCRT | [`dig_win64_static_9.20.30.exe`](https://github.com/rampageX/static-dig/releases/download/v9.20.30/dig_win64_static_9.20.30.exe) | Windows 10/11 x64；已在 Windows Server 2025 CI 和 Windows 11 实测 |
 
 ARMv5TE 版本已在 RT-AC5300 (Tomato)、N1、部分 ARM64 VPS 上实测。**ARM64 内核必须启用 32 位 AArch32/compat 执行支持**；并非所有 ARM64 环境都能运行 32 位 ELF。不能运行时需单独的 aarch64 原生构建。
 
-每次发布生成两个可执行文件和校验清单：
+Linux 自动发布生成两个可执行文件和校验清单；Windows 版本单独发布，使用 `SHA256SUMS_win64` 校验：
 
 ```sh
 sha256sum -c SHA256SUMS
@@ -44,9 +45,26 @@ dig @223.5.5.5 example.com A +https=/dns-query +tls-ca +tls-hostname=dns.alidns.
 
 `+tls-ca` 依赖目标机器上可读取的 CA 证书。x86_64 构建的 OpenSSL 默认路径为 `/etc/ssl`；ARMv5TE 为 Tomato 兼容而使用 `/opt/etc/ssl`。需要时可显式设置 `SSL_CERT_FILE=/path/to/ca-certificates.crt`。不要为了省事关闭证书校验。
 
+### Windows x64（BIND 9.20.30）
+
+[下载 Windows 原生单文件 EXE](https://github.com/rampageX/static-dig/releases/download/v9.20.30/dig_win64_static_9.20.30.exe) · [Windows SHA256 校验文件](https://github.com/rampageX/static-dig/releases/download/v9.20.30/SHA256SUMS_win64)
+
+原生 MinGW-w64 / UCRT 编译；OpenSSL、libuv、nghttp2 等第三方依赖静态链接，不需要另外携带 DLL。Windows 系统 DLL 由操作系统提供。**DoT / DoH 的 `+tls-ca` 使用 Windows 系统 ROOT 证书库**，保留证书链和域名验证。
+
+在 **CMD** 中运行：
+
+```cmd
+dig_win64_static_9.20.30.exe -v
+dig_win64_static_9.20.30.exe @223.5.5.5 example.com A +tls +tls-ca +tls-hostname=dns.alidns.com
+dig_win64_static_9.20.30.exe @223.5.5.5 example.com A +https=/dns-query +tls-ca +tls-hostname=dns.alidns.com
+certutil -hashfile dig_win64_static_9.20.30.exe SHA256
+```
+
+如重命名为 `dig.exe`，先用 `where dig.exe` 检查 PATH 中的旧版本。PowerShell 里建议把 `@223.5.5.5` 写成 `'@223.5.5.5'`。该 Windows 版本对应经过验证的 9.20.30 实验分支；**尚未接入 BIND 新版本的自动发布**，新版本需重新验证兼容补丁。
+
 ## 自动检测与发布
 
-GitHub Actions 工作流：[`.github/workflows/static-dig.yml`](.github/workflows/static-dig.yml)。
+Linux 自动发布工作流：[`.github/workflows/static-dig.yml`](.github/workflows/static-dig.yml)。**Windows 发布目前是独立的、已验证的 9.20.30 版本**；不会假定后续 BIND 版本能直接套用当前 Windows 补丁。
 
 1. 每天北京时间 **09:17** 检查 [ISC 官网下载页](https://www.isc.org/download/)上明确标注为 **Current Stable + ESV** 的 **BIND 9.20.x** 版本，不追踪开发版 9.21.x。
 2. 如果该版本已存在 GitHub Release，就不重复构建/覆盖；如无 Release，则下载 ISC 官方源码与 `.asc` 签名，使用 ISC 官方公钥以及[固定的签名者指纹白名单](ci/release_source.py)验证，取得经过认证的源码 SHA256。
@@ -110,7 +128,8 @@ ISC 上游明确禁止对完整 BIND 套件进行静态链接（会影响 `dlope
 
 - **2026-10-30，ARMv5TE**：32 位 ARM EABI5 静态 ELF，Tomato RT-AC5300 上 `dig -v`、DoH HTTPS 查询成功；N1 / 若干 ARM64 VPS 可运行。
 - **2026-10-30，x86_64**：64 位 x86 静态 ELF，在阿里云 VPS 实测 `DiG 9.20.30`、DoT `:853`（40 ms）与 DoH `:443`（100 ms）成功，均返回 `NOERROR`。
-- **自动 CI**：离线协议检查和签名校验作为每次发布前的硬门槛；**真实公网 DoT/DoH 仍建议在实际部署目标上复核**，因为各机器的 CA 文件和网络策略不同。
+- **2026-10-30，Windows x64**：Windows Server 2025 [GitHub Actions](https://github.com/rampageX/static-dig/actions/runs/41044124400) 通过启动、UDP、DoT 及 DoH 实机测试；Windows 11 用户实测 `DiG 9.20.30`、阿里公共 DNS 的 DoT（12 ms）与 DoH（10 ms），TLS 证书验证开启且均返回 `NOERROR`。
+- **Linux 自动 CI**：离线协议检查和签名校验作为每次发布前的硬门槛；**真实公网 DoT/DoH 仍建议在实际部署目标上复核**，因为各机器的 CA 文件和网络策略不同。
 
 官方资料：[ISC BIND 下载](https://www.isc.org/download/) · [ISC 源码签名验证说明](https://kb.isc.org/docs/aa-01225) · [ISC 代码签名公钥及指纹](https://www.isc.org/pgpkey/)
 
