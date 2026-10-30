@@ -1,6 +1,7 @@
 # static-dig
 
 [![Build and release static dig](https://github.com/rampageX/static-dig/actions/workflows/static-dig.yml/badge.svg)](https://github.com/rampageX/static-dig/actions/workflows/static-dig.yml)
+[![Windows native x64 (experimental)](https://github.com/rampageX/static-dig/actions/workflows/windows-dig-experimental.yml/badge.svg?branch=experiment%2Fwindows-native)](https://github.com/rampageX/static-dig/actions/workflows/windows-dig-experimental.yml)
 
 **ISC BIND 9 `dig`：完全静态链接、单文件、跨 Linux 发行版运行。**
 
@@ -43,6 +44,26 @@ dig @223.5.5.5 example.com A +https=/dns-query +tls-ca +tls-hostname=dns.alidns.
 ```
 
 `+tls-ca` 依赖目标机器上可读取的 CA 证书。x86_64 构建的 OpenSSL 默认路径为 `/etc/ssl`；ARMv5TE 为 Tomato 兼容而使用 `/opt/etc/ssl`。需要时可显式设置 `SSL_CERT_FILE=/path/to/ca-certificates.crt`。不要为了省事关闭证书校验。
+
+## Windows x64（实验性预览）
+
+**Windows 原生 `dig.exe` 9.20.30 已编译成功，并在 Windows Server 2025 x64 GitHub Runner 上通过实机查询验证。** 面向 Windows 10/11 x64（仍建议用户在自己的 Windows 机器上复测）。这是与 Linux musl 静态 ELF 完全不同的构建路线：用 MinGW-w64/UCRT 编译 BIND 源码，静态链接 OpenSSL、libuv、nghttp2 等第三方依赖，保留 Windows 系统自带的 DLL 调用。
+
+- **[下载已通过测试的 Windows x64 dig.exe（GitHub Actions Artifact）](https://github.com/rampageX/static-dig/actions/runs/41044124400/artifacts/12972021558)**。需要登录 GitHub 下载，压缩包内为单个 `dig.exe`。实验版不是正式 Release，Actions Artifact 有保留期限。
+- 版本目前固定为 **BIND 9.20.30**，尚未接入 Linux 自动升级/正式发布流程；未来 BIND 上游 API 更新可能需要移植补丁。
+- 独立 `dig.exe`，无需另外安装 OpenSSL、BIND、MSYS2 运行库。依赖的 UCRT/Win32 DLL 由 Windows 提供；**DoT/DoH 的 `+tls-ca` 使用 Windows 系统 ROOT 信任库，保持证书链与服务器名称校验**。实验版先与现有旧版并存，不建议直接覆盖。
+- **注意：**Windows 版需要 Windows x64；Linux 的 ARMv5TE / x86_64 ELF 不能作为 Windows 程序运行。
+
+Windows PowerShell 测试命令：
+
+```powershell
+.\dig.exe -v
+.\dig.exe '@223.5.5.5' example.com A +time=3 +tries=1
+.\dig.exe '@223.5.5.5' example.com A +tls +tls-ca +tls-hostname=dns.alidns.com +time=3 +tries=1
+.\dig.exe '@223.5.5.5' example.com A +https=/dns-query +tls-ca +tls-hostname=dns.alidns.com +time=3 +tries=1
+```
+
+PowerShell 中将 `@223.5.5.5` 放在引号内，可避免 `@` 被当作特殊语法。Windows 版通过 Windows 系统根证书库验证 TLS，默认不需要附加 PEM 文件。指定自定义 CA 时仍可使用 `+tls-ca=文件路径`；DoT/DoH 成功与否还取决于本机网络与远端服务器。安装前先通过 `where.exe dig.exe` 检查已有旧版的 PATH 优先级。
 
 ## 自动检测与发布
 
@@ -110,7 +131,8 @@ ISC 上游明确禁止对完整 BIND 套件进行静态链接（会影响 `dlope
 
 - **2026-10-30，ARMv5TE**：32 位 ARM EABI5 静态 ELF，Tomato RT-AC5300 上 `dig -v`、DoH HTTPS 查询成功；N1 / 若干 ARM64 VPS 可运行。
 - **2026-10-30，x86_64**：64 位 x86 静态 ELF，在阿里云 VPS 实测 `DiG 9.20.30`、DoT `:853`（40 ms）与 DoH `:443`（100 ms）成功，均返回 `NOERROR`。
-- **自动 CI**：离线协议检查和签名校验作为每次发布前的硬门槛；**真实公网 DoT/DoH 仍建议在实际部署目标上复核**，因为各机器的 CA 文件和网络策略不同。
+- **2026-10-30，Windows x64（实验分支）**：[GitHub Actions Windows Server 2025 实机日志](https://github.com/rampageX/static-dig/actions/runs/41044124400)：`dig.exe -v` → `DiG 9.20.30`；本地 UDP DNS 查询返回 `203.0.113.9` 和 `NOERROR`；Cloudflare `1.1.1.1:853` 的 DoT 与 `1.1.1.1:443` 的 DoH 均在 `+tls-ca +tls-hostname=cloudflare-dns.com` 下返回 `NOERROR`。Windows 10/11 用户侧尚待复核。
+- **Linux 自动 CI**：离线协议检查和签名校验作为每次正式发布前的硬门槛；真实公网 DoT/DoH 仍建议在实际部署目标上复核，因为各机器的 CA 文件和网络策略不同。
 
 官方资料：[ISC BIND 下载](https://www.isc.org/download/) · [ISC 源码签名验证说明](https://kb.isc.org/docs/aa-01225) · [ISC 代码签名公钥及指纹](https://www.isc.org/pgpkey/)
 
