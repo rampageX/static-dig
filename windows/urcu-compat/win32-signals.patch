@@ -1,0 +1,56 @@
+diff --git a/src/urcu-call-rcu-impl.h b/src/urcu-call-rcu-impl.h
+--- a/src/urcu-call-rcu-impl.h
++++ b/src/urcu-call-rcu-impl.h
+@@ -441,6 +441,8 @@ static void call_rcu_data_init(struct call_rcu_data **crdpp,
+ {
+ 	struct call_rcu_data *crdp;
+ 	int ret;
++#ifndef _WIN32
+ 	sigset_t newmask, oldmask;
++#endif
+ 
+ 	crdp = malloc(sizeof(*crdp));
+@@ -457,15 +459,19 @@ static void call_rcu_data_init(struct call_rcu_data **crdpp,
+ 	crdp->affinity_init = false;
+ 	rcu_set_pointer(crdpp, crdp);
+ 
++#ifndef _WIN32
+ 	ret = sigfillset(&newmask);
+ 	urcu_posix_assert(!ret);
+ 	ret = pthread_sigmask(SIG_BLOCK, &newmask, &oldmask);
+ 	urcu_posix_assert(!ret);
++#endif
+ 
+ 	ret = pthread_create(&crdp->tid, NULL, call_rcu_thread, crdp);
+ 	if (ret)
+ 		urcu_die(ret);
+ 
++#ifndef _WIN32
+ 	ret = pthread_sigmask(SIG_SETMASK, &oldmask, NULL);
+ 	urcu_posix_assert(!ret);
++#endif
+ }
+diff --git a/src/urcu-defer-impl.h b/src/urcu-defer-impl.h
+--- a/src/urcu-defer-impl.h
++++ b/src/urcu-defer-impl.h
+@@ -396,16 +396,20 @@ static void start_defer_thread(void)
+ {
+ 	int ret;
++#ifndef _WIN32
+ 	sigset_t newmask, oldmask;
+ 
+ 	ret = sigfillset(&newmask);
+ 	urcu_posix_assert(!ret);
+ 	ret = pthread_sigmask(SIG_BLOCK, &newmask, &oldmask);
+ 	urcu_posix_assert(!ret);
++#endif
+ 
+ 	ret = pthread_create(&tid_defer, NULL, thr_defer, NULL);
+ 	if (ret)
+ 		urcu_die(ret);
+ 
++#ifndef _WIN32
+ 	ret = pthread_sigmask(SIG_SETMASK, &oldmask, NULL);
+ 	urcu_posix_assert(!ret);
++#endif
+ }
