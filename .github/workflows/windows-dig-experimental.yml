@@ -96,6 +96,8 @@ jobs:
           patch --batch -p1 < ../windows/port-9.20.30-stage5.patch
           # Repair Windows socket ABI and remaining 9.20 DNS/ISC interfaces.
           patch --batch -p1 < ../windows/port-9.20.30-stage6.patch
+          # Restore DNSSEC algorithm vtables after 9.20 key serialization support.
+          patch --batch -p1 < ../windows/port-9.20.30-stage7.patch
       - name: Cross-configure and compile
         run: |
           cd bind-9.20.30

@@ -1,0 +1,132 @@
+--- a/lib/dns/hmac_link.c
++++ b/lib/dns/hmac_link.c
+@@ -94,6 +94,10 @@
+ 						isc_buffer_t *data) {          \
+ 		return (hmac_fromdns(ISC_MD_##alg, key, data));                \
+ 	}                                                                      \
++	static isc_result_t hmac##alg##_tofile(const dst_key_t *key,           \
++					       const char *directory) {        \
++		return (hmac_tofile(ISC_MD_##alg, key, directory));            \
++	}                                                                      \
+ 	static isc_result_t hmac##alg##_parse(                                 \
+ 		dst_key_t *key, isc_lex_t *lexer, dst_key_t *pub) {            \
+ 		const char *file = isc_lex_getsourcename(lexer);               \
+@@ -124,6 +128,7 @@
+ 		hmac##alg##_destroy,                                           \
+ 		hmac##alg##_todns,                                             \
+ 		hmac##alg##_fromdns,                                           \
++		hmac##alg##_tofile,                                            \
+ 		hmac##alg##_parse,                                             \
+ 		NULL, /*%< cleanup */                                          \
+ 		NULL, /*%< fromlabel */                                        \
+@@ -383,6 +388,77 @@
+ }
+ 
+ static int
++hmac__get_tag_key(const isc_md_type_t *type) {
++	if (type == ISC_MD_MD5) {
++		return TAG_HMACMD5_KEY;
++	} else if (type == ISC_MD_SHA1) {
++		return TAG_HMACSHA1_KEY;
++	} else if (type == ISC_MD_SHA224) {
++		return TAG_HMACSHA224_KEY;
++	} else if (type == ISC_MD_SHA256) {
++		return TAG_HMACSHA256_KEY;
++	} else if (type == ISC_MD_SHA384) {
++		return TAG_HMACSHA384_KEY;
++	} else if (type == ISC_MD_SHA512) {
++		return TAG_HMACSHA512_KEY;
++	} else {
++		UNREACHABLE();
++	}
++}
++
++static int
++hmac__get_tag_bits(const isc_md_type_t *type) {
++	if (type == ISC_MD_MD5) {
++		return TAG_HMACMD5_BITS;
++	} else if (type == ISC_MD_SHA1) {
++		return TAG_HMACSHA1_BITS;
++	} else if (type == ISC_MD_SHA224) {
++		return TAG_HMACSHA224_BITS;
++	} else if (type == ISC_MD_SHA256) {
++		return TAG_HMACSHA256_BITS;
++	} else if (type == ISC_MD_SHA384) {
++		return TAG_HMACSHA384_BITS;
++	} else if (type == ISC_MD_SHA512) {
++		return TAG_HMACSHA512_BITS;
++	} else {
++		UNREACHABLE();
++	}
++}
++
++static isc_result_t
++hmac_tofile(const isc_md_type_t *type, const dst_key_t *key,
++	    const char *directory) {
++	dst_hmac_key_t *hkey;
++	dst_private_t priv;
++	int bytes = (key->key_size + 7) / 8;
++	uint16_t bits;
++
++	if (key->keydata.hmac_key == NULL) {
++		return DST_R_NULLKEY;
++	}
++
++	if (key->external) {
++		return DST_R_EXTERNALKEY;
++	}
++
++	hkey = key->keydata.hmac_key;
++
++	priv.elements[0].tag = hmac__get_tag_key(type);
++	priv.elements[0].length = bytes;
++	priv.elements[0].data = hkey->key;
++
++	bits = htons(key->key_bits);
++
++	priv.elements[1].tag = hmac__get_tag_bits(type);
++	priv.elements[1].length = sizeof(bits);
++	priv.elements[1].data = (uint8_t *)&bits;
++
++	priv.nelements = 2;
++
++	return dst__privstruct_writefile(key, &priv, directory);
++}
++
++static int
+ hmac__to_dst_alg(const isc_md_type_t *type) {
+ 	if (type == ISC_MD_MD5) {
+ 		return DST_ALG_HMACMD5;
+
+--- a/lib/dns/opensslecdsa_link.c
++++ b/lib/dns/opensslecdsa_link.c
+@@ -1142,6 +1142,7 @@
+ 	dst__openssl_keypair_destroy,
+ 	opensslecdsa_todns,
+ 	opensslecdsa_fromdns,
++	opensslecdsa_tofile,
+ 	opensslecdsa_parse,
+ 	NULL,			/*%< cleanup */
+ 	opensslecdsa_fromlabel, /*%< fromlabel */
+
+--- a/lib/dns/openssleddsa_link.c
++++ b/lib/dns/openssleddsa_link.c
+@@ -546,6 +546,7 @@
+ 	dst__openssl_keypair_destroy,
+ 	openssleddsa_todns,
+ 	openssleddsa_fromdns,
++	openssleddsa_tofile,
+ 	openssleddsa_parse,
+ 	NULL, /*%< cleanup */
+ 	openssleddsa_fromlabel,
+
+--- a/lib/dns/opensslrsa_link.c
++++ b/lib/dns/opensslrsa_link.c
+@@ -1239,6 +1239,7 @@
+ 	dst__openssl_keypair_destroy,
+ 	opensslrsa_todns,
+ 	opensslrsa_fromdns,
++	opensslrsa_tofile,
+ 	opensslrsa_parse,
+ 	NULL, /*%< cleanup */
+ 	opensslrsa_fromlabel,
