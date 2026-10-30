@@ -1,0 +1,15 @@
+--- a/lib/isc/tls.c
++++ b/lib/isc/tls.c
+@@ -1098,6 +1098,12 @@
+ 	}
+ 
+ 	if (ca_bundle_filename == NULL) {
+ 		ret = X509_STORE_set_default_paths(store);
++#if defined(_WIN32) && OPENSSL_VERSION_NUMBER >= 0x30200000L
++		/* Also trust Windows' system ROOT store on native builds. */
++		if (X509_STORE_load_store(store, "org.openssl.winstore:") == 1) {
++			ret = 1;
++		}
++#endif
+ 	} else {
+ 		ret = X509_STORE_load_locations(store, ca_bundle_filename,

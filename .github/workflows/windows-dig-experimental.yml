@@ -104,6 +104,8 @@ jobs:
           patch --batch -p1 < ../windows/port-9.20.30-stage10.patch
           # Initialize Winsock before network probes; close native SOCKET handles correctly.
           patch --batch -p1 < ../windows/port-9.20.30-stage11.patch
+          # Load native Windows ROOT certificates for verified DoT/DoH.
+          patch --batch -p1 < ../windows/port-9.20.30-stage12.patch
       - name: Cross-configure and compile
         run: |
           cd bind-9.20.30
