@@ -1,0 +1,10 @@
+# Local script build roots and released artifacts (published as Release assets).
+.build/
+.downloads/
+armv5te_bind_dev/
+x86_64_bind_dev/
+armv5te_result/
+x86_64_result/
+dig_armv5te_static_*
+dig_x86_64_static_*
+__pycache__/

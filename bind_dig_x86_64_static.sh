@@ -16,7 +16,8 @@ DOH=1
 REBUILD=0
 DRY_RUN=0
 JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf 4)}"
-PROXY_FALLBACK="${PROXY_FALLBACK:-http://192.168.2.8:7373}"
+# Explicit PROXY_FALLBACK='' disables the private-LAN fallback (e.g. CI).
+PROXY_FALLBACK="${PROXY_FALLBACK-http://192.168.2.8:7373}"
 
 # SHA256 checksums from the exact upstream source archives (2026-10-29).
 # A different BIND release is accepted only with an explicit SHA256 override.
@@ -76,13 +77,15 @@ MARK_DIR="$WORK/marks"
 BIND_DIR="bind-$BIND_VERSION"
 PKG_WRAPPER="$WORK/pkg-config-static"
 
-if [[ -z "${http_proxy:-}${https_proxy:-}${all_proxy:-}${HTTP_PROXY:-}${HTTPS_PROXY:-}${ALL_PROXY:-}" ]]; then
+if [[ -z "${http_proxy:-}${https_proxy:-}${all_proxy:-}${HTTP_PROXY:-}${HTTPS_PROXY:-}${ALL_PROXY:-}" && -n "$PROXY_FALLBACK" ]]; then
   export http_proxy="$PROXY_FALLBACK" https_proxy="$PROXY_FALLBACK"
   export HTTP_PROXY="$PROXY_FALLBACK" HTTPS_PROXY="$PROXY_FALLBACK"
   export all_proxy="$PROXY_FALLBACK" ALL_PROXY="$PROXY_FALLBACK"
   PROXY_MODE="fallback $PROXY_FALLBACK"
-else
+elif [[ -n "${http_proxy:-}${https_proxy:-}${all_proxy:-}${HTTP_PROXY:-}${HTTPS_PROXY:-}${ALL_PROXY:-}" ]]; then
   PROXY_MODE='existing environment'
+else
+  PROXY_MODE='direct'
 fi
 
 if [[ -n "${CROSS_BIN_DIR:-}" ]]; then
@@ -364,6 +367,6 @@ if "$READELF" -l "$OUT" | grep -Eq 'INTERP|DYNAMIC'; then
 fi
 file "$OUT"
 log "SUCCESS: $OUT"
-log 'Try on an x86_64 Linux VPS: dig_x86_64_static_9.20.30 -v'
+log "Try on an x86_64 Linux VPS: $(basename "$OUT") -v"
 log 'For DoT: dig @223.5.5.5 example.com +tls'
 log 'For DoH: dig @223.5.5.5 example.com +https'

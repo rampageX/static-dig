@@ -1,0 +1,172 @@
+name: Build and release static dig
+
+on:
+  # ISC normally publishes maintenance releases monthly. Daily polling also
+  # picks up out-of-cycle security releases without needing a personal token.
+  schedule:
+    - cron: '17 1 * * *' # 09:17 Asia/Shanghai
+  workflow_dispatch:
+    inputs:
+      bind_version:
+        description: 'Optional exact BIND 9.20.x (blank = current stable ESV)'
+        required: false
+        type: string
+      build_existing:
+        description: 'Rebuild an already published version for validation (no overwrite)'
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/static-dig.yml'
+      - 'bind_dig_*.sh'
+      - 'ci/**'
+      - 'tests/**'
+  pull_request:
+    paths:
+      - '.github/workflows/static-dig.yml'
+      - 'bind_dig_*.sh'
+      - 'ci/**'
+      - 'tests/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: static-dig-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: Detect ISC stable release and verify signature
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    outputs:
+      version: ${{ steps.isc.outputs.version }}
+      build: ${{ steps.isc.outputs.build }}
+      publish: ${{ steps.isc.outputs.publish }}
+      source_sha256: ${{ steps.isc.outputs.source_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check release selector and script syntax
+        run: |
+          python3 -m unittest discover -s tests -v
+          bash -n bind_dig_armv5te_static.sh bind_dig_x86_64_static.sh
+      - name: Discover version, authenticate ISC tarball, check existing release
+        id: isc
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REQUESTED_VERSION: ${{ github.event.inputs.bind_version || '' }}
+          BUILD_EXISTING: ${{ github.event.inputs.build_existing || 'false' }}
+        run: python3 ci/release_source.py
+
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: detect
+    if: needs.detect.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [armv5te, x86_64]
+    env:
+      ROOT: ${{ runner.temp }}/static-dig-build
+      PROXY_FALLBACK: '' # No private LAN proxy in hosted CI.
+      BIND_SHA256: ${{ needs.detect.outputs.source_sha256 }}
+      BIND_VERSION: ${{ needs.detect.outputs.version }}
+      JOBS: '2'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build and QEMU test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            bash curl ca-certificates xz-utils bzip2 coreutils \
+            build-essential linux-libc-dev perl autoconf automake libtool \
+            pkg-config binutils musl-tools qemu-user file
+
+      - name: Install pinned ARM soft-float musl cross-toolchain
+        if: matrix.arch == 'armv5te'
+        run: |
+          curl -fL --retry 4 --retry-delay 3 --connect-timeout 30 \
+            -o "$RUNNER_TEMP/gcc-arm-linux-musleabi.tar.gz" \
+            https://github.com/prepkg/gcc-toolchain/releases/download/1.0.0-beta/gcc-arm-linux-musleabi.tar.gz
+          echo '52b152e6cefdd23ff7a527fd485bffc8d0152e76fa9b01a9d5c11f344e5c5b01  '"$RUNNER_TEMP/gcc-arm-linux-musleabi.tar.gz" | sha256sum -c -
+          sudo tar --no-same-owner -xzf "$RUNNER_TEMP/gcc-arm-linux-musleabi.tar.gz" -C /opt
+          echo '/opt/arm-linux-musleabi/bin' >> "$GITHUB_PATH"
+
+      - name: Build fully static dig (only; never named)
+        shell: bash
+        run: |
+          if [[ '${{ matrix.arch }}' == 'armv5te' ]]; then
+            export CROSS_BIN_DIR=/opt/arm-linux-musleabi/bin
+            bash bind_dig_armv5te_static.sh --version "$BIND_VERSION" --jobs "$JOBS"
+          else
+            bash bind_dig_x86_64_static.sh --version "$BIND_VERSION" --jobs "$JOBS"
+          fi
+
+      - name: Validate ELF, version and real UDP DNS wire format
+        shell: bash
+        run: |
+          bin="$ROOT/${{ matrix.arch }}_result/dig_${{ matrix.arch }}_static_${BIND_VERSION}"
+          file "$bin"
+          ! readelf -l "$bin" | grep -Eq 'INTERP|DYNAMIC'
+          if [[ '${{ matrix.arch }}' == 'armv5te' ]]; then
+            qemu-arm "$bin" -v | grep -Fx "DiG $BIND_VERSION"
+            python3 ci/smoke_dns.py "$bin" --qemu-arm
+          else
+            "$bin" -v | grep -Fx "DiG $BIND_VERSION"
+            python3 ci/smoke_dns.py "$bin"
+          fi
+
+      - name: Upload verified binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: dig-${{ matrix.arch }}
+          path: ${{ runner.temp }}/static-dig-build/${{ matrix.arch }}_result/dig_${{ matrix.arch }}_static_${{ needs.detect.outputs.version }}
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish both architectures together
+    needs: [detect, build]
+    if: needs.detect.outputs.publish == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dig-*
+          merge-multiple: true
+          path: dist
+      - name: Verify assets and generate SHA256SUMS
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+          SOURCE_SHA256: ${{ needs.detect.outputs.source_sha256 }}
+        working-directory: dist
+        run: |
+          test -s "dig_armv5te_static_${VERSION}"
+          test -s "dig_x86_64_static_${VERSION}"
+          sha256sum "dig_armv5te_static_${VERSION}" "dig_x86_64_static_${VERSION}" > SHA256SUMS
+          printf 'BIND dig %s — standalone, fully static musl builds.\n\n' "$VERSION" > RELEASE_NOTES.md
+          printf '%s\n' '- ARMv5TE: EABI5, soft-float, suitable for ARM devices with AArch32 execution support.' '- x86_64: x86-64-v1 instruction baseline, portable across mainstream 64-bit Linux.' '- Only `dig` is built, not `named`; normal DNS, DNSSEC, DoT, DoH enabled.' '- Both files passed static ELF checks, version check and an offline UDP DNS query.' '' >> RELEASE_NOTES.md
+          printf 'ISC source: https://downloads.isc.org/isc/bind9/%s/\n' "$VERSION" >> RELEASE_NOTES.md
+          printf 'ISC-signed tarball SHA256: `%s`\n\n' "$SOURCE_SHA256" >> RELEASE_NOTES.md
+          printf '%s\n' 'Check SHA256SUMS after download. DoT/DoH certificate validation depends on the target system CA store; real network testing is recommended.' >> RELEASE_NOTES.md
+
+      - name: Create immutable-by-policy versioned Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.detect.outputs.version }}
+        working-directory: dist
+        run: |
+          gh release create "v${VERSION}" \
+            "dig_armv5te_static_${VERSION}" "dig_x86_64_static_${VERSION}" SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "BIND dig ${VERSION} · static ARMv5TE / x86_64" \
+            --notes-file RELEASE_NOTES.md
