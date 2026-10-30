@@ -33,6 +33,15 @@ jobs:
           tar -I zstdcat -C / -xf /tmp/openssl.pkg.tar.zst
           tar -I zstdcat -C / -xf /tmp/libuv.pkg.tar.zst
           tar -I zstdcat -C / -xf /tmp/nghttp2.pkg.tar.zst
+      - name: Cross-build Userspace RCU for native Windows
+        run: |
+          curl -fL --retry 3 -o userspace-rcu-0.15.7.tar.bz2 https://lttng.org/files/urcu/userspace-rcu-0.15.7.tar.bz2
+          echo '2556b83adc0f9b3ac8024e613e17d014d04c4c49110604ce55fcb14eae32edd3  userspace-rcu-0.15.7.tar.bz2' | sha256sum -c -
+          tar --no-same-owner -xjf userspace-rcu-0.15.7.tar.bz2
+          cd userspace-rcu-0.15.7
+          ./configure --host=x86_64-w64-mingw32 --prefix=/ucrt64 --enable-static --disable-shared
+          make -j4
+          make install
       - name: Download authenticated-version ISC source
         run: |
           curl -fL --retry 3 -o bind-9.20.30.tar.xz https://downloads.isc.org/isc/bind9/9.20.30/bind-9.20.30.tar.xz
