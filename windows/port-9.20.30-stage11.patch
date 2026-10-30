@@ -1,0 +1,67 @@
+--- a/bin/dig/dig.c
++++ b/bin/dig/dig.c
+@@ -19,6 +19,10 @@
+ #include <stdlib.h>
+ #include <time.h>
+ 
++#ifdef _WIN32
++#include <winsock2.h>
++#endif
++
+ #include <isc/attributes.h>
+ #include <isc/dir.h>
+ #include <isc/loop.h>
+@@ -3482,8 +3486,20 @@
+ main(int argc, char **argv) {
++#ifdef _WIN32
++	WSADATA winsock_data;
++	if (WSAStartup(MAKEWORD(2, 2), &winsock_data) != 0) {
++		fputs("dig: failed to initialize Winsock 2.2\n", stderr);
++		return 1;
++	}
++#endif
++
+ 	dig_setup(argc, argv);
+ 	dig_query_setup(false, false, argc, argv);
+ 	dig_startup();
+ 	dig_shutdown();
+ 
++#ifdef _WIN32
++	(void)WSACleanup();
++#endif
++
+ 	return exitcode;
+ }
+--- a/lib/isc/net.c
++++ b/lib/isc/net.c
+@@ -22,5 +22,8 @@
+ #include <errno.h>
+ #include <fcntl.h>
++#ifdef _WIN32
++#include <winsock2.h>
++#endif
+ #include <netdb.h>
+ #if !defined(_WIN32)
+ #include <sys/uio.h>
+@@ -115,6 +118,10 @@
+ static isc_result_t
+ try_proto(int domain) {
++#ifdef _WIN32
++	SOCKET s;
++#else
+ 	int s;
++#endif
+ 	isc_result_t result = ISC_R_SUCCESS;
+ 
+ 	s = socket(domain, SOCK_STREAM, 0);
+@@ -176,6 +183,10 @@
+ 	}
+ 
++#ifdef _WIN32
++	(void)closesocket(s);
++#else
+ 	(void)close(s);
++#endif
+ 
+ 	return result;
+ }
