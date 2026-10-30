@@ -147,3 +147,67 @@ jobs:
           name: dig-win64-experimental
           path: dig.exe
           if-no-files-found: error
+
+
+  windows-smoke:
+    name: Verify dig.exe on native Windows x64
+    needs: windows-x64
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: dig-win64-experimental
+          path: .
+      - name: Confirm executable startup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path '.\dig.exe')) { throw 'dig.exe was not downloaded' }
+          & .\dig.exe -v
+          if ($LASTEXITCODE -ne 0) { throw "dig -v exited $LASTEXITCODE" }
+      - name: Offline UDP DNS integration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $server = Start-Job -ScriptBlock {
+            $udp = [System.Net.Sockets.UdpClient]::new(53053)
+            try {
+              $peer = [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Any, 0)
+              $query = $udp.Receive([ref]$peer)
+              # +noedns: the query contains just a DNS header and one question.
+              $answer = [byte[]](0xC0,0x0C,0,1,0,1,0,0,0,60,0,4,203,0,113,9)
+              $packet = New-Object byte[] ($query.Length + $answer.Length)
+              [Array]::Copy($query, 0, $packet, 0, $query.Length)
+              $packet[2] = 0x81; $packet[3] = 0x80
+              $packet[6] = 0; $packet[7] = 1
+              $packet[10] = 0; $packet[11] = 0
+              [Array]::Copy($answer, 0, $packet, $query.Length, $answer.Length)
+              [void]$udp.Send($packet, $packet.Length, $peer)
+            } finally { $udp.Dispose() }
+          }
+          try {
+            Start-Sleep -Milliseconds 900
+            $reply = & .\dig.exe '@127.0.0.1' -p 53053 example.com A +noedns +time=3 +tries=1 2>&1 | Out-String
+            Write-Host $reply
+            if ($LASTEXITCODE -ne 0 -or $reply -notmatch '203\.0\.113\.9' -or $reply -notmatch 'status: NOERROR') {
+              throw 'Native UDP DNS query failed'
+            }
+          } finally {
+            Stop-Job $server -ErrorAction SilentlyContinue
+            Remove-Job $server -Force -ErrorAction SilentlyContinue
+          }
+      - name: Public DoT integration (network-dependent)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $reply = & .\dig.exe '@1.1.1.1' example.com A +tls +tls-ca +tls-hostname=cloudflare-dns.com +time=6 +tries=1 2>&1 | Out-String
+          Write-Host $reply
+          if ($LASTEXITCODE -ne 0 -or $reply -notmatch 'status: NOERROR') { throw 'DoT failed or egress blocked' }
+      - name: Public DoH integration (network-dependent)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $reply = & .\dig.exe '@1.1.1.1' example.com A +https=/dns-query +tls-ca +tls-hostname=cloudflare-dns.com +time=6 +tries=1 2>&1 | Out-String
+          Write-Host $reply
+          if ($LASTEXITCODE -ne 0 -or $reply -notmatch 'status: NOERROR') { throw 'DoH failed or egress blocked' }
