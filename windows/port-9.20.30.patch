@@ -201,7 +201,7 @@ index e4cea79..609ec92 100644
  
  bool
 diff --git a/configure.ac b/configure.ac
-index 75088e5..151a16b 100644
+index 75088e5..6931db7 100644
 --- a/configure.ac
 +++ b/configure.ac
 @@ -33,7 +33,6 @@ AC_DEFINE([PACKAGE_VERSION_MINOR], ["][bind_VERSION_MINOR]["], [BIND 9 Minor par
@@ -236,7 +236,7 @@ index 75088e5..151a16b 100644
  
  #
  # Enable system extensions to C and POSIX
-@@ -156,14 +148,12 @@ AX_CHECK_COMPILE_FLAG([-Werror -fno-delete-null-pointer-checks],
+@@ -156,14 +148,19 @@ AX_CHECK_COMPILE_FLAG([-Werror -fno-delete-null-pointer-checks],
  AX_CHECK_COMPILE_FLAG([-fdiagnostics-show-option],
  		      [STD_CFLAGS="$STD_CFLAGS -fdiagnostics-show-option"])
  
@@ -250,10 +250,17 @@ index 75088e5..151a16b 100644
  AM_CONDITIONAL([HOST_MACOS], [test "$host_macos" = "yes"])
  
 -#
++# Optional named-server libraries are intentionally omitted from this
++# dig-only Windows build; their automake conditionals remain referenced.
++AM_CONDITIONAL([HAVE_GSSAPI], [false])
++AM_CONDITIONAL([HAVE_LMDB], [false])
++AM_CONDITIONAL([HAVE_LIBXML2], [false])
++AM_CONDITIONAL([HAVE_JSON_C], [false])
++
  # Change defaults for developers if not explicity set.
  # Needs to be before the option is tested.
  #
-@@ -353,7 +343,7 @@ AC_CHECK_HEADERS([fcntl.h regex.h sys/time.h unistd.h sys/mman.h sys/sockio.h sy
+@@ -353,7 +350,7 @@ AC_CHECK_HEADERS([fcntl.h regex.h sys/time.h unistd.h sys/mman.h sys/sockio.h sy
  		  # include <sys/param.h>
  		  #endif
  		  #ifdef HAVE_SYS_SOCKET_H
@@ -262,7 +269,7 @@ index 75088e5..151a16b 100644
  		  #endif
  		 ])
  
-@@ -438,28 +428,6 @@ AC_TYPE_SIZE_T
+@@ -438,28 +435,6 @@ AC_TYPE_SIZE_T
  AC_TYPE_SSIZE_T
  AC_TYPE_UINTPTR_T
  
@@ -291,7 +298,7 @@ index 75088e5..151a16b 100644
  #
  # check for GCC noreturn attribute
  #
-@@ -470,24 +438,6 @@ AX_GCC_FUNC_ATTRIBUTE([noreturn])
+@@ -470,24 +445,6 @@ AX_GCC_FUNC_ATTRIBUTE([noreturn])
  #
  AX_GCC_FUNC_ATTRIBUTE([malloc])
  
@@ -316,7 +323,7 @@ index 75088e5..151a16b 100644
  #
  # check for GCC returns_nonnull attribute
  #
-@@ -593,7 +543,7 @@ LIBS="$LIBS $LIBUV_LIBS"
+@@ -593,7 +550,7 @@ LIBS="$LIBS $LIBUV_LIBS"
  # libuv recvmmsg support
  AC_CHECK_DECLS([UV_UDP_MMSG_FREE, UV_UDP_MMSG_CHUNK], [], [], [[#include <uv.h>]])
  AC_MSG_CHECKING([whether struct msghdr uses padding for alignment])
@@ -325,7 +332,7 @@ index 75088e5..151a16b 100644
  				   [const struct msghdr h = { .__pad1 = 0, .__pad2 = 0 };])],
  		  [AC_MSG_RESULT([yes])
  		   AC_DEFINE([HAVE_DECL_UV_UDP_RECVMMSG],
-@@ -634,18 +584,6 @@ AM_CONDITIONAL([HAVE_LIBNGHTTP2], [test -n "$LIBNGHTTP2_LIBS"])
+@@ -634,18 +591,6 @@ AM_CONDITIONAL([HAVE_LIBNGHTTP2], [test -n "$LIBNGHTTP2_LIBS"])
  #
  AC_CHECK_FUNCS([flockfile getc_unlocked])
  
@@ -344,7 +351,7 @@ index 75088e5..151a16b 100644
  #
  # Do we want to use pthread rwlock?
  #
-@@ -793,152 +731,6 @@ AC_SUBST([OPENSSL_LIBS])
+@@ -793,152 +738,6 @@ AC_SUBST([OPENSSL_LIBS])
  
  AC_CHECK_FUNCS([clock_gettime])
  
@@ -497,7 +504,7 @@ index 75088e5..151a16b 100644
  #
  # was --with-zlib specified?
  #
-@@ -976,8 +768,8 @@ AC_COMPILE_IFELSE(
+@@ -976,8 +775,8 @@ AC_COMPILE_IFELSE(
    [AC_LANG_PROGRAM(
       [[
         #include <sys/types.h>
@@ -508,7 +515,7 @@ index 75088e5..151a16b 100644
       ]],
       [[
         struct sockaddr_in6 sin6;
-@@ -1616,16 +1408,7 @@ AC_CONFIG_FILES([Makefile])
+@@ -1616,16 +1415,7 @@ AC_CONFIG_FILES([Makefile])
  # Binaries
  
  AC_CONFIG_FILES([bin/Makefile
@@ -526,7 +533,7 @@ index 75088e5..151a16b 100644
  
  # Libraries
  
-@@ -1718,18 +1501,10 @@ report() {
+@@ -1718,18 +1508,10 @@ report() {
      if test "yes" = "$enable_full_report" -o "rbt" = "$zonedb"; then
              echo "    Default cache database type: $cachedb"
      fi
@@ -545,7 +552,7 @@ index 75088e5..151a16b 100644
      fi
  
      test "yes" = "$enable_dnsrps" && \
-@@ -1800,8 +1575,6 @@ report() {
+@@ -1800,8 +1582,6 @@ report() {
      test -z "$LIBXML2_LIBS" && echo "    XML statistics (--with-libxml2)"
      test -z "$JSON_C_LIBS" && echo "    JSON statistics (--with-json-c)"
      test -z "$ZLIB_LIBS" && echo "    HTTP zlib compression (--with-zlib)"
