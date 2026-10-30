@@ -1,0 +1,76 @@
+name: Experimental Windows native dig
+
+on:
+  push:
+    branches: [experiment/windows-native]
+    paths:
+      - '.github/workflows/windows-dig-experimental.yml'
+      - 'windows/**'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    name: Cross-compile native Windows x64 dig (experimental)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container: archlinux:latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Linux/MinGW build tools
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --needed --noconfirm curl ca-certificates openssl tar xz zstd patch libtool pkgconf autoconf automake mingw-w64-gcc gcc make zip perl
+      - name: Restore pinned Windows dependency archives
+        run: |
+          curl -fL --retry 3 -o /tmp/openssl.pkg.tar.zst https://mirror.umd.edu/msys2/mingw/ucrt64/mingw-w64-ucrt-x86_64-openssl-3.5.4-1-any.pkg.tar.zst
+          echo 'f124fda279f00b6789d3fc4eef564ecf37b3c44d31c712a7e77e3e822b498a06  /tmp/openssl.pkg.tar.zst' | sha256sum -c -
+          curl -fL --retry 3 -o /tmp/libuv.pkg.tar.zst https://mirror.umd.edu/msys2/mingw/ucrt64/mingw-w64-ucrt-x86_64-libuv-1.51.0-1-any.pkg.tar.zst
+          echo 'b1d44e3c2819f6a3cc48ecd2367aac7932fe3edcaa620d0f3244edd7d620cd0f  /tmp/libuv.pkg.tar.zst' | sha256sum -c -
+          curl -fL --retry 3 -o /tmp/nghttp2.pkg.tar.zst https://mirror.umd.edu/msys2/mingw/ucrt64/mingw-w64-ucrt-x86_64-nghttp2-1.67.1-1-any.pkg.tar.zst
+          echo 'a0ac5debeb137dfc6a4d32c914caef3724a7cc79005eff2956f3bb956ec9faa8  /tmp/nghttp2.pkg.tar.zst' | sha256sum -c -
+          tar -I zstdcat -C / -xf /tmp/openssl.pkg.tar.zst
+          tar -I zstdcat -C / -xf /tmp/libuv.pkg.tar.zst
+          tar -I zstdcat -C / -xf /tmp/nghttp2.pkg.tar.zst
+      - name: Download authenticated-version ISC source
+        run: |
+          curl -fL --retry 3 -o bind-9.20.30.tar.xz https://downloads.isc.org/isc/bind9/9.20.30/bind-9.20.30.tar.xz
+          echo '9e1443a40a72a30272cbc3196d020a6b2e26937111c83e59e101e82e1e3b4fef  bind-9.20.30.tar.xz' | sha256sum -c -
+          tar -xJf bind-9.20.30.tar.xz
+      - name: Apply experimental Windows-native portability patch
+        run: |
+          cd bind-9.20.30
+          patch --batch -p1 < ../windows/port-9.20.30.patch
+      - name: Cross-configure and compile
+        run: |
+          cd bind-9.20.30
+          autoreconf --install
+          ./configure --target=x86_64-w64-mingw32 --host=x86_64-w64-mingw32 \
+            PKG_CONFIG_PATH=/ucrt64/lib/pkgconfig \
+            OPENSSL_CFLAGS='-I/ucrt64/include' \
+            OPENSSL_LIBS='-L/ucrt64/lib -lcrypto -lssl' \
+            --with-zlib=no
+          make -j4
+      - name: Link standalone Windows executable
+        run: |
+          cd bind-9.20.30/bin/dig
+          x86_64-w64-mingw32-gcc -O2 -s -o ../../../dig.exe \
+            dig.o ./.libs/libdighost.a -pthread -D_UCRT -mcrtdll=ucrt \
+            -Wl,--dynamicbase,--high-entropy-va,--nxcompat \
+            -Wl,--start-group \
+            /usr/x86_64-w64-mingw32/lib/libwinpthread.a \
+            ../../lib/isc/.libs/libisc_la-*.o \
+            ../../lib/isc/netmgr/.libs/libisc_la-*.o \
+            ../../lib/dns/.libs/libdns_la-*.o \
+            ../../lib/isccfg/.libs/libisccfg_la-*.o \
+            /ucrt64/lib/libuv.a \
+            /ucrt64/lib/libssl.a /ucrt64/lib/libcrypto.a /ucrt64/lib/libnghttp2.a \
+            -lws2_32 -lpsapi -liphlpapi -luserenv -luser32 -ldbghelp -lole32 -lshell32 -lcrypt32 -lsynchronization \
+            -Wl,--end-group
+          x86_64-w64-mingw32-objdump -p ../../../dig.exe | grep 'DLL Name:'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dig-win64-experimental
+          path: dig.exe
+          if-no-files-found: error
