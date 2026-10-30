@@ -33,7 +33,19 @@ jobs:
           tar -I zstdcat -C / -xf /tmp/openssl.pkg.tar.zst
           tar -I zstdcat -C / -xf /tmp/libuv.pkg.tar.zst
           tar -I zstdcat -C / -xf /tmp/nghttp2.pkg.tar.zst
+      - name: Cache native Win64 Userspace RCU toolchain outputs
+        uses: actions/cache@v4
+        id: urcu-cache
+        with:
+          path: |
+            /ucrt64/include/urcu
+            /ucrt64/include/urcu.h
+            /ucrt64/include/urcu-*.h
+            /ucrt64/lib/liburcu*.a
+            /ucrt64/lib/pkgconfig/liburcu*.pc
+          key: static-dig-win64-liburcu-0.15.7-port-v1
       - name: Cross-build Userspace RCU for native Windows
+        if: steps.urcu-cache.outputs.cache-hit != 'true'
         run: |
           curl -fL --retry 3 -o userspace-rcu-0.15.7.tar.bz2 https://lttng.org/files/urcu/userspace-rcu-0.15.7.tar.bz2
           echo '2556b83adc0f9b3ac8024e613e17d014d04c4c49110604ce55fcb14eae32edd3  userspace-rcu-0.15.7.tar.bz2' | sha256sum -c -
@@ -73,7 +85,7 @@ jobs:
             OPENSSL_CFLAGS='-I/ucrt64/include' \
             OPENSSL_LIBS='-L/ucrt64/lib -lcrypto -lssl' \
             --with-zlib=no
-          make -j4
+          make -k -j4
       - name: Link standalone Windows executable
         run: |
           cd bind-9.20.30/bin/dig
