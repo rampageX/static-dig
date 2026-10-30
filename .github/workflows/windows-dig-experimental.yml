@@ -98,6 +98,8 @@ jobs:
           patch --batch -p1 < ../windows/port-9.20.30-stage6.patch
           # Restore DNSSEC algorithm vtables after 9.20 key serialization support.
           patch --batch -p1 < ../windows/port-9.20.30-stage7.patch
+          # Restore DNS resolver and zone support required by linked BIND modules.
+          patch --batch -p1 < ../windows/port-9.20.30-stage9.patch
       - name: Cross-configure and compile
         run: |
           cd bind-9.20.30
@@ -133,6 +135,7 @@ jobs:
             ../../lib/isc/.libs/libisc.a \
             /usr/x86_64-w64-mingw32/lib/libwinpthread.a \
             /ucrt64/lib/libuv.a \
+            /ucrt64/lib/liburcu.a /ucrt64/lib/liburcu-cds.a /ucrt64/lib/liburcu-common.a \
             /ucrt64/lib/libssl.a /ucrt64/lib/libcrypto.a /ucrt64/lib/libnghttp2.a \
             -lws2_32 -lpsapi -liphlpapi -luserenv -luser32 -ldbghelp -lole32 -lshell32 -lcrypt32 -lsynchronization \
             -Wl,--end-group

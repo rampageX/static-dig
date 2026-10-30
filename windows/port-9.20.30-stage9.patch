@@ -1,0 +1,68 @@
+--- a/lib/dns/Makefile.am
++++ b/lib/dns/Makefile.am
+@@ -127,6 +127,7 @@
+ 	$(dst_HEADERS)			\
+ 	$(irs_HEADERS)			\
+ 	acl.c				\
++	adb.c				\
+ 	badcache.c			\
+ 	byaddr.c			\
+ 	cache.c				\
+@@ -140,6 +141,7 @@
+ 	dbiterator.c			\
+ 	diff.c				\
+ 	dispatch.c			\
++	dlz.c				\
+ 	dns64.c				\
+ 	dnssec.c			\
+ 	ds.c				\
+@@ -151,9 +153,12 @@
+ 	ecs.c				\
+ 	ede.c				\
+ 	fixedname.c			\
++	forward.c			\
+ 	hmac_link.c			\
+ 	ipkeylist.c			\
+ 	iptable.c			\
++	journal.c			\
++	kasp.c				\
+ 	key.c				\
+ 	keydata.c			\
+ 	keymgr.c			\
+@@ -166,6 +171,9 @@
+ 	name.c				\
+ 	nametree.c			\
+ 	ncache.c			\
++	nsec.c				\
++	nsec3.c				\
++	nta.c				\
+ 	openssl_link.c			\
+ 	openssl_shim.c			\
+ 	openssl_shim.h			\
+@@ -198,10 +206,15 @@
+ 	resconf.c			\
+ 	resolver.c			\
+ 	result.c			\
++	rootns.c			\
++	rpz.c				\
++	rrl.c				\
+ 	rriterator.c			\
+ 	sdlz.c				\
+ 	skr.c				\
+ 	soa.c				\
++	ssu.c				\
++	ssu_external.c			\
+ 	stats.c				\
+ 	time.c				\
+ 	transport.c			\
+
+--- a/lib/isc/Makefile.am
++++ b/lib/isc/Makefile.am
+@@ -165,6 +165,7 @@
+ 	quota.c			\
+ 	radix.c			\
+ 	random.c		\
++	ratelimiter.c		\
+ 	region.c		\
+ 	result.c		\
+ 	safe.c			\
