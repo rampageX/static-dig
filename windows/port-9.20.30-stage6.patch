@@ -1,0 +1,505 @@
+--- a/bin/dig/dighost.c
++++ b/bin/dig/dighost.c
+@@ -4948,6 +4948,7 @@
+ 	UNUSED(lookup);
+ 	UNUSED(active);
+ 	return;
++#endif /* HAVE_LIBIDN2 */
+ }
+ 
+ bool
+
+--- a/lib/isccfg/namedconf.c
++++ b/lib/isccfg/namedconf.c
+@@ -1263,6 +1263,7 @@
+ #else
+ 	{ "statistics-channels", &cfg_type_statschannels,
+ 	  CFG_CLAUSEFLAG_MULTI | CFG_CLAUSEFLAG_NOTCONFIGURED },
++#endif
+ 	{ "tls", &cfg_type_tlsconf, CFG_CLAUSEFLAG_MULTI },
+ 	{ "view", &cfg_type_view, CFG_CLAUSEFLAG_MULTI },
+ 	{ NULL, NULL, 0 }
+
+--- a/lib/dns/dst_internal.h
++++ b/lib/dns/dst_internal.h
+@@ -177,6 +177,7 @@
+ 	/* conversion functions */
+ 	isc_result_t (*todns)(const dst_key_t *key, isc_buffer_t *data);
+ 	isc_result_t (*fromdns)(dst_key_t *key, isc_buffer_t *data);
++	isc_result_t (*tofile)(const dst_key_t *key, const char *directory);
+ 	isc_result_t (*parse)(dst_key_t *key, isc_lex_t *lexer, dst_key_t *pub);
+ 
+ 	/* cleanup */
+@@ -234,6 +235,14 @@
+ void *
+ dst__mem_realloc(void *ptr, size_t size);
+ 
++/* Secure private key file handling. */
++FILE *
++dst_key_open(char *tmpname, mode_t mode);
++isc_result_t
++dst_key_close(char *tmpname, FILE *fp, char *filename);
++isc_result_t
++dst_key_cleanup(char *tmpname, FILE *fp);
++
+ ISC_LANG_ENDDECLS
+ 
+ /*! \file */
+
+--- a/lib/dns/dst_api.c
++++ b/lib/dns/dst_api.c
+@@ -164,6 +164,10 @@
+ 	       unsigned int protocol, unsigned int bits,
+ 	       dns_rdataclass_t rdclass, dns_ttl_t ttl, isc_mem_t *mctx);
+ static isc_result_t
++write_public_key(const dst_key_t *key, int type, const char *directory);
++static isc_result_t
++write_key_state(const dst_key_t *key, int type, const char *directory);
++static isc_result_t
+ buildfilename(dns_name_t *name, dns_keytag_t id, unsigned int alg,
+ 	      unsigned int type, const char *directory, isc_buffer_t *out);
+ static isc_result_t
+@@ -891,7 +895,13 @@
+ 		return NULL;
+ 	}
+ 
++	/* Windows _chmod only handles read-only state; the file's ACL is
++	 * inherited from its containing directory. */
++#ifdef _WIN32
++	if (_chmod(tmpname, mode & ~isc_os_umask()) != 0) {
++#else
+ 	if (fchmod(fd, mode & ~isc_os_umask()) != 0) {
++#endif
+ 		goto error;
+ 	}
+ 
+
+--- a/lib/dns/dst_parse.c
++++ b/lib/dns/dst_parse.c
+@@ -140,6 +140,19 @@
+ 	return -1;
+ }
+ 
++static const char *
++find_tag(const int value) {
++	int i;
++
++	for (i = 0;; i++) {
++		if (map[i].tag == NULL) {
++			return NULL;
++		} else if (value == map[i].value) {
++			return map[i].tag;
++		}
++	}
++}
++
+ static int
+ find_metadata(const char *s, const char *tags[], int ntags) {
+ 	int i;
+
+--- a/lib/dns/update.c
++++ b/lib/dns/update.c
+@@ -15,6 +15,10 @@
+ #include <stdbool.h>
+ #include <time.h>
+ 
++#ifdef _WIN32
++#include "time-compat.h"
++#endif
++
+ #include <isc/log.h>
+ #include <isc/magic.h>
+ #include <isc/mem.h>
+
+--- a/lib/isc/include/isc/file.h
++++ b/lib/isc/include/isc/file.h
+@@ -25,6 +25,9 @@
+ ISC_LANG_BEGINDECLS
+ 
+ isc_result_t
++isc_file_settime(const char *file, isc_time_t *time);
++
++isc_result_t
+ isc_file_mode(const char *file, mode_t *modep);
+ 
+ isc_result_t
+@@ -247,6 +250,9 @@
+  */
+ 
+ isc_result_t
++isc_file_renameunique(const char *file, char *templet);
++
++isc_result_t
+ isc_file_absolutepath(const char *filename, char *path, size_t pathlen);
+ /*%<
+  * Given a file name, return the fully qualified path to the file.
+
+--- a/lib/isc/file.c
++++ b/lib/isc/file.c
+@@ -53,6 +53,11 @@
+ #include <time.h>   /* Required for utimes on some platforms. */
+ #include <unistd.h> /* Required for mkstemp on NetBSD. */
+ 
++#ifdef _WIN32
++#include <windows.h>
++#include <sys/utime.h>
++#endif
++
+ #ifdef HAVE_SYS_MMAN_H
+ #include <sys/mman.h>
+ #endif /* ifdef HAVE_SYS_MMAN_H */
+@@ -173,6 +178,27 @@
+ 	return result;
+ }
+ 
++isc_result_t
++isc_file_settime(const char *file, isc_time_t *when) {
++	REQUIRE(file != NULL && when != NULL);
++#ifdef _WIN32
++	struct __utimbuf64 times;
++	times.actime = times.modtime = (__time64_t)isc_time_seconds(when);
++	if (_utime64(file, &times) != 0) {
++		return isc__errno2result(errno);
++	}
++#else
++	struct timeval times[2];
++	times[0].tv_sec = times[1].tv_sec = (time_t)isc_time_seconds(when);
++	times[0].tv_usec = times[1].tv_usec =
++		(int32_t)(isc_time_nanoseconds(when) / 1000);
++	if (utimes(file, times) != 0) {
++		return isc__errno2result(errno);
++	}
++#endif
++	return ISC_R_SUCCESS;
++}
++
+ #undef TEMPLATE
+ #define TEMPLATE "tmp-XXXXXXXXXX" /*%< 14 characters. */
+ 
+@@ -224,6 +250,67 @@
+ 			      "wxyz0123456789";
+ 
+ isc_result_t
++isc_file_renameunique(const char *file, char *templet) {
++	char *x;
++	char *cp;
++
++	REQUIRE(file != NULL);
++	REQUIRE(templet != NULL);
++
++	cp = templet;
++	while (*cp != '\0') {
++		cp++;
++	}
++	if (cp == templet) {
++		return ISC_R_FAILURE;
++	}
++
++	x = cp--;
++	while (cp >= templet && *cp == 'X') {
++		*cp = alphnum[isc_random_uniform(sizeof(alphnum) - 1)];
++		x = cp--;
++	}
++	for (;;) {
++#ifdef _WIN32
++		/* MoveFileA fails if the destination exists; never overwrite it. */
++		if (MoveFileA(file, templet)) {
++			return ISC_R_SUCCESS;
++		}
++		DWORD err = GetLastError();
++		if (err != ERROR_ALREADY_EXISTS && err != ERROR_FILE_EXISTS) {
++			return ISC_R_FAILURE;
++		}
++#else
++		if (link(file, templet) == 0) {
++			break;
++		}
++		if (errno != EEXIST) {
++			return isc__errno2result(errno);
++		}
++#endif
++		for (cp = x;;) {
++			const char *t;
++			if (*cp == '\0') {
++				return ISC_R_FAILURE;
++			}
++			t = strchr(alphnum, *cp);
++			if (t == NULL || *++t == '\0') {
++				*cp++ = alphnum[0];
++			} else {
++				*cp = *t;
++				break;
++			}
++		}
++	}
++#ifndef _WIN32
++	if (unlink(file) < 0 && errno != ENOENT) {
++		return isc__errno2result(errno);
++	}
++#endif
++	return ISC_R_SUCCESS;
++}
++
++isc_result_t
+ isc_file_openunique(char *templet, FILE **fp) {
+ 	int mode = S_IWUSR | S_IRUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH;
+ 	return isc_file_openuniquemode(templet, mode, fp);
+
+--- a/lib/isc/netmgr/socket.c
++++ b/lib/isc/netmgr/socket.c
+@@ -20,10 +20,10 @@
+ #include "netmgr-int.h"
+ 
+ #define setsockopt_on(socket, level, name) \
+-	setsockopt(socket, level, name, &(int){ 1 }, sizeof(int))
++	setsockopt(socket, level, name, (const char *)&(int){ 1 }, sizeof(int))
+ 
+ #define setsockopt_off(socket, level, name) \
+-	setsockopt(socket, level, name, &(int){ 0 }, sizeof(int))
++	setsockopt(socket, level, name, (const char *)&(int){ 0 }, sizeof(int))
+ 
+ static isc_result_t
+ socket_freebind(uv_os_sock_t fd, sa_family_t sa_family) {
+@@ -147,10 +147,18 @@
+ 
+ isc_result_t
+ isc__nm_socket(int domain, int type, int protocol, uv_os_sock_t *sockp) {
++#ifdef _WIN32
++	/* SOCKET is pointer-sized on 64-bit Windows, not an int. */
++	uv_os_sock_t sock = socket(domain, type, protocol);
++	if (sock == INVALID_SOCKET) {
++		return isc_uverr2result(uv_translate_sys_error(WSAGetLastError()));
++	}
++#else
+ 	int sock = socket(domain, type, protocol);
+ 	if (sock < 0) {
+ 		return isc_errno_toresult(errno);
+ 	}
++#endif
+ 
+ 	*sockp = (uv_os_sock_t)sock;
+ 	return ISC_R_SUCCESS;
+@@ -158,7 +166,11 @@
+ 
+ void
+ isc__nm_closesocket(uv_os_sock_t sock) {
++#ifdef _WIN32
++	closesocket(sock);
++#else
+ 	close(sock);
++#endif
+ }
+ 
+ isc_result_t
+@@ -176,12 +188,14 @@
+ 	 */
+ 
+ #if defined(SO_REUSEPORT) && !defined(__linux__)
+-	if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val)) == -1) {
++	if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, (const char *)&val,
++		       sizeof(val)) == -1) {
+ 		return ISC_R_FAILURE;
+ 	}
+ 	return ISC_R_SUCCESS;
+ #elif defined(SO_REUSEADDR)
+-	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val)) == -1) {
++	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&val,
++		       sizeof(val)) == -1) {
+ 		return ISC_R_FAILURE;
+ 	}
+ 	return ISC_R_SUCCESS;
+@@ -235,7 +249,7 @@
+ 		}
+ #elif defined(IPV6_MTU_DISCOVER) && defined(IP_PMTUDISC_OMIT)
+ 		if (setsockopt(fd, IPPROTO_IPV6, IPV6_MTU_DISCOVER,
+-			       &(int){ IP_PMTUDISC_OMIT }, sizeof(int)) == -1)
++			       (const char *)&(int){ IP_PMTUDISC_OMIT }, sizeof(int)) == -1)
+ 		{
+ 			return ISC_R_FAILURE;
+ 		} else {
+@@ -253,7 +267,7 @@
+ 		}
+ #elif defined(IP_MTU_DISCOVER) && defined(IP_PMTUDISC_OMIT)
+ 		if (setsockopt(fd, IPPROTO_IP, IP_MTU_DISCOVER,
+-			       &(int){ IP_PMTUDISC_OMIT }, sizeof(int)) == -1)
++			       (const char *)&(int){ IP_PMTUDISC_OMIT }, sizeof(int)) == -1)
+ 		{
+ 			return ISC_R_FAILURE;
+ 		} else {
+@@ -297,7 +311,7 @@
+ 		timeout = 1;
+ 	}
+ 
+-	if (setsockopt(fd, IPPROTO_TCP, TIMEOUT_OPTNAME, &timeout,
++	if (setsockopt(fd, IPPROTO_TCP, TIMEOUT_OPTNAME, (const char *)&timeout,
+ 		       sizeof(timeout)) == -1)
+ 	{
+ 		return ISC_R_FAILURE;
+@@ -337,7 +351,7 @@
+ isc_result_t
+ isc__nm_socket_tcp_maxseg(uv_os_sock_t fd, int size) {
+ #ifdef TCP_MAXSEG
+-	if (setsockopt(fd, IPPROTO_TCP, TCP_MAXSEG, (void *)&size,
++	if (setsockopt(fd, IPPROTO_TCP, TCP_MAXSEG, (const char *)&size,
+ 		       sizeof(size)))
+ 	{
+ 		return ISC_R_FAILURE;
+@@ -361,7 +375,7 @@
+ 		return ISC_R_FAILURE;
+ 	}
+ #elif defined(IPV6_MTU)
+-	if (setsockopt(fd, IPPROTO_IPV6, IPV6_MTU, &(int){ 1280 },
++	if (setsockopt(fd, IPPROTO_IPV6, IPV6_MTU, (const char *)&(int){ 1280 },
+ 		       sizeof(int)) == -1)
+ 	{
+ 		return ISC_R_FAILURE;
+@@ -433,7 +447,8 @@
+ 	INSIST(port_low < port_high);
+ 
+ 	port_range = (uint32_t)port_low | ((uint32_t)port_high << 16);
+-	if (setsockopt(fd, IPPROTO_IP, IP_LOCAL_PORT_RANGE, &port_range,
++	if (setsockopt(fd, IPPROTO_IP, IP_LOCAL_PORT_RANGE,
++		       (const char *)&port_range,
+ 		       sizeof(port_range)) == -1)
+ 	{
+ 		return ISC_R_FAILURE;
+
+--- a/lib/dns/rbtdb.c
++++ b/lib/dns/rbtdb.c
+@@ -15,6 +15,7 @@
+ 
+ #include <inttypes.h>
+ #include <stdbool.h>
++#include <sys/mman.h>
+ 
+ #include <isc/ascii.h>
+ #include <isc/async.h>
+@@ -46,13 +47,19 @@
+ #include <dns/fixedname.h>
+ #include <dns/log.h>
+ #include <dns/masterdump.h>
++#include <dns/nsec.h>
++#include <dns/nsec3.h>
+ #include <dns/rbt.h>
+ #include <dns/rdata.h>
+ #include <dns/rdataset.h>
+ #include <dns/rdatasetiter.h>
+ #include <dns/rdataslab.h>
+ #include <dns/rdatastruct.h>
++#include <dns/stats.h>
+ #include <dns/time.h>
++#include <dns/view.h>
++#include <dns/zone.h>
++#include <dns/zonekey.h>
+ 
+ #include "db_p.h"
+ #include "rbtdb_p.h"
+@@ -825,8 +832,6 @@
+ 	uint_least16_t newattributes = 0;
+ 	dns_stats_t *stats = NULL;
+ 
+-	UNUSED(rbtdb);
+-
+ 	/*
+ 	 * If we are already ancient there is nothing to do.
+ 	 */
+@@ -935,7 +940,7 @@
+ 			down_next = dcurrent->down;
+ 			INSIST(dcurrent->serial <= dparent->serial);
+ 			if (dcurrent->serial == dparent->serial ||
+-			    ISC_IGNORE(dcurrent))
++			    IGNORE(dcurrent))
+ 			{
+ 				if (down_next != NULL) {
+ 					down_next->next = dparent;
+@@ -951,7 +956,7 @@
+ 		 * We've now eliminated all IGNORE datasets with the possible
+ 		 * exception of current, which we now check.
+ 		 */
+-		if (ISC_IGNORE(current)) {
++		if (IGNORE(current)) {
+ 			down_next = current->down;
+ 			if (down_next == NULL) {
+ 				if (top_prev != NULL) {
+@@ -1594,6 +1599,7 @@
+ 		     dns_dbnode_t *origin) {
+ 	dns_rdataset_t keyset;
+ 	dns_rdataset_t nsecset, signsecset;
++	bool haszonekey = false;
+ 	bool hasnsec = false;
+ 	isc_result_t result;
+ 
+@@ -1607,6 +1613,10 @@
+ 		while (result == ISC_R_SUCCESS) {
+ 			dns_rdata_t keyrdata = DNS_RDATA_INIT;
+ 			dns_rdataset_current(&keyset, &keyrdata);
++			if (dns_zonekey_iszonekey(&keyrdata)) {
++				haszonekey = true;
++				break;
++			}
+ 			result = dns_rdataset_next(&keyset);
+ 		}
+ 		dns_rdataset_disassociate(&keyset);
+@@ -1629,6 +1639,8 @@
+ 		dns_rdataset_disassociate(&nsecset);
+ 	}
+ 
++	setnsec3parameters(db, version);
++
+ 	/*
+ 	 * Do we have a valid NSEC/NSEC3 chain?
+ 	 */
+@@ -2416,7 +2428,7 @@
+ 			 * Look for an active extant CNAME.
+ 			 */
+ 			do {
+-				if (header->serial <= serial && !ISC_IGNORE(header))
++				if (header->serial <= serial && !IGNORE(header))
+ 				{
+ 					/*
+ 					 * Is this a "this rdataset doesn't
+@@ -2451,7 +2463,7 @@
+ 				 */
+ 				do {
+ 					if (header->serial <= serial &&
+-					    !ISC_IGNORE(header))
++					    !IGNORE(header))
+ 					{
+ 						/*
+ 						 * Is this a "this rdataset
+@@ -2733,7 +2745,7 @@
+ 	 * data.  We skip over them.
+ 	 */
+ 	header = topheader;
+-	while (header != NULL && ISC_IGNORE(header)) {
++	while (header != NULL && IGNORE(header)) {
+ 		header = header->down;
+ 	}
+ 	if (header != NULL) {
+@@ -3567,7 +3579,7 @@
+ 	 * data.  We skip over them.
+ 	 */
+ 	header = topheader;
+-	while (header != NULL && ISC_IGNORE(header)) {
++	while (header != NULL && IGNORE(header)) {
+ 		header = header->down;
+ 	}
+ 	if (header != NULL && EXISTS(header)) {
+@@ -4164,7 +4176,7 @@
+ 					break;
+ 				}
+ 				header = header->down;
+-			} else if (header->serial <= serial && !ISC_IGNORE(header))
++			} else if (header->serial <= serial && !IGNORE(header))
+ 			{
+ 				if (!iterator_active(rbtdb, rbtiterator,
+ 						     header))
+@@ -4257,7 +4269,7 @@
+ 					break;
+ 				}
+ 				header = header->down;
+-			} else if (header->serial <= serial && !ISC_IGNORE(header))
++			} else if (header->serial <= serial && !IGNORE(header))
+ 			{
+ 				if (!iterator_active(rbtdb, rbtiterator,
+ 						     header))

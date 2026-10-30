@@ -94,6 +94,8 @@ jobs:
           patch --batch -p1 < ../windows/port-9.20.30-stage4.patch
           # Restore network manager, HTTP, DNS and statistics paths to 9.20.
           patch --batch -p1 < ../windows/port-9.20.30-stage5.patch
+          # Repair Windows socket ABI and remaining 9.20 DNS/ISC interfaces.
+          patch --batch -p1 < ../windows/port-9.20.30-stage6.patch
       - name: Cross-configure and compile
         run: |
           cd bind-9.20.30
