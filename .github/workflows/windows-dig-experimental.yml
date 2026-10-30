@@ -34,7 +34,7 @@ jobs:
           tar -I zstdcat -C / -xf /tmp/libuv.pkg.tar.zst
           tar -I zstdcat -C / -xf /tmp/nghttp2.pkg.tar.zst
       - name: Cache native Win64 Userspace RCU toolchain outputs
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         id: urcu-cache
         with:
           path: |
@@ -64,6 +64,17 @@ jobs:
           mkdir -p /ucrt64/lib/pkgconfig
           install -m644 src/.libs/liburcu-common.a src/.libs/liburcu.a src/.libs/liburcu-cds.a /ucrt64/lib/
           install -m644 src/liburcu.pc src/liburcu-cds.pc /ucrt64/lib/pkgconfig/
+      - name: Save Win64 Userspace RCU cache before later build failures
+        if: steps.urcu-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /ucrt64/include/urcu
+            /ucrt64/include/urcu.h
+            /ucrt64/include/urcu-*.h
+            /ucrt64/lib/liburcu*.a
+            /ucrt64/lib/pkgconfig/liburcu*.pc
+          key: static-dig-win64-liburcu-0.15.7-port-v1
       - name: Download authenticated-version ISC source
         run: |
           curl -fL --retry 3 -o bind-9.20.30.tar.xz https://downloads.isc.org/isc/bind9/9.20.30/bind-9.20.30.tar.xz
@@ -77,6 +88,8 @@ jobs:
           sed -i '/isc_file_getsizefd(int fd, off_t \*size);/a\isc_result_t isc_file_sanitize(const char *dir, const char *base, const char *ext, char *path, size_t length);' lib/isc/include/isc/file.h
           # Match the BIND 9.20 log, event-loop and config interfaces.
           patch --batch -p1 < ../windows/port-9.20.30-stage2.patch
+          # Include time/string CRT adapters only in the files that use them.
+          patch --batch -p1 < ../windows/port-9.20.30-stage3.patch
       - name: Cross-configure and compile
         run: |
           cd bind-9.20.30

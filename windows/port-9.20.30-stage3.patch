@@ -1,0 +1,30 @@
+diff --git a/lib/isc/string.c b/lib/isc/string.c
+index 9199b30..16771b4 100644
+--- a/lib/isc/string.c
++++ b/lib/isc/string.c
+@@ -53,6 +53,10 @@
+ #endif /* ifdef _GNU_SOURCE */
+ #include <string.h>
+ 
++#if defined(_WIN32)
++#include <string-compat.h>
++#endif
++
+ #include <isc/string.h> /* IWYU pragma: keep */
+ 
+ /*
+diff --git a/lib/isc/time.c b/lib/isc/time.c
+index 3945e00..8b296c7 100644
+--- a/lib/isc/time.c
++++ b/lib/isc/time.c
+@@ -21,6 +21,10 @@
+ #include <sys/time.h> /* Required for struct timeval on some platforms. */
+ #include <time.h>
+ 
++#if defined(_WIN32)
++#include <time-compat.h>
++#endif
++
+ #include <isc/log.h>
+ #include <isc/overflow.h>
+ #include <isc/strerr.h>
