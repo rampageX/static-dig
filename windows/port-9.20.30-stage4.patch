@@ -1,0 +1,370 @@
+--- a/lib/isc/include/isc/types.h
++++ b/lib/isc/include/isc/types.h
+@@ -92,6 +92,13 @@
+ 	isc_one_or_more = -2,
+ };
+ 
++/*% Statistics formats (text file or XML) */
++typedef enum {
++	isc_statsformat_file,
++	isc_statsformat_xml,
++	isc_statsformat_json
++} isc_statsformat_t;
++
+ typedef enum isc_nmsocket_type {
+ 	isc_nm_nonesocket = 0,
+ 	isc_nm_udpsocket = 1 << 1,
+--- a/lib/isc/include/isc/netmgr.h
++++ b/lib/isc/include/isc/netmgr.h
+@@ -591,6 +591,18 @@
+  * size.
+  */
+ 
++void
++isc_nm_setstats(isc_nm_t *mgr, isc_stats_t *stats);
++/*%<
++ * Set a socket statistics counter set 'stats' for 'mgr'.
++ *
++ * Requires:
++ *\li	'mgr' is valid and doesn't have stats already set.
++ *
++ *\li	stats is a valid set of statistics counters supporting the
++ *	full range of socket-related stats counter numbers.
++ */
++
+ isc_result_t
+ isc_nm_checkaddr(const isc_sockaddr_t *addr, isc_socktype_t type);
+ /*%<
+--- a/lib/dns/include/dns/acl.h
++++ b/lib/dns/include/dns/acl.h
+@@ -35,6 +35,7 @@
+ #include <isc/netaddr.h>
+ #include <isc/refcount.h>
+ 
++#include <dns/geoip.h>
+ #include <dns/iptable.h>
+ #include <dns/name.h>
+ #include <dns/types.h>
+@@ -72,6 +73,9 @@
+ 	dns_aclelementtype_t type;
+ 	bool		     negative;
+ 	dns_name_t	     keyname;
++#if defined(HAVE_GEOIP2)
++	dns_geoip_elem_t geoip_elem;
++#endif /* HAVE_GEOIP2 */
+ 	dns_acl_t *nestedacl;
+ 	int	   node_num;
+ };
+@@ -102,6 +106,9 @@
+ 	dns_acl_t *localnets;
+ 
+ 	bool match_mapped;
++#if defined(HAVE_GEOIP2)
++	dns_geoip_databases_t *geoip;
++#endif /* HAVE_GEOIP2 */
+ };
+ 
+ #define DNS_ACL_MAGIC	 ISC_MAGIC('D', 'a', 'c', 'l')
+--- a/lib/dns/include/dns/cache.h
++++ b/lib/dns/include/dns/cache.h
+@@ -232,6 +232,24 @@
+  *\li	other error returns.
+  */
+ 
++isc_stats_t *
++dns_cache_getstats(dns_cache_t *cache);
++/*
++ * Return a pointer to the stats collection object for 'cache'
++ */
++
++void
++dns_cache_dumpstats(dns_cache_t *cache, FILE *fp);
++/*
++ * Dump cache statistics and status in text to 'fp'
++ */
++
++void
++dns_cache_updatestats(dns_cache_t *cache, isc_result_t result);
++/*
++ * Update cache statistics based on result code in 'result'
++ */
++
+ void
+ dns_cache_setmaxrrperset(dns_cache_t *cache, uint32_t value);
+ /*%<
+@@ -244,4 +262,20 @@
+  * Set the maximum resource record types per owner name that can be cached.
+  */
+ 
++#ifdef HAVE_LIBXML2
++int
++dns_cache_renderxml(dns_cache_t *cache, void *writer0);
++/*
++ * Render cache statistics and status in XML for 'writer'.
++ */
++#endif /* HAVE_LIBXML2 */
++
++#ifdef HAVE_JSON_C
++isc_result_t
++dns_cache_renderjson(dns_cache_t *cache, void *cstats0);
++/*
++ * Render cache statistics and status in JSON
++ */
++#endif /* HAVE_JSON_C */
++
+ ISC_LANG_ENDDECLS
+--- a/lib/dns/include/dns/callbacks.h
++++ b/lib/dns/include/dns/callbacks.h
+@@ -53,6 +53,13 @@
+ 	dns_transactionfunc_t commit;
+ 
+ 	/*%
++	 * dns_master_load*() call this when loading a raw zonefile,
++	 * to pass back information obtained from the file header
++	 */
++	dns_rawdatafunc_t rawdata;
++	dns_zone_t	 *zone;
++
++	/*%
+ 	 * dns_load_master / dns_rdata_fromtext call this to issue a error.
+ 	 */
+ 	void (*error)(struct dns_rdatacallbacks *, const char *, ...);
+--- a/lib/dns/include/dns/db.h
++++ b/lib/dns/include/dns/db.h
+@@ -1605,6 +1605,23 @@
+  */
+ 
+ isc_result_t
++dns_db_getnsec3parameters(dns_db_t *db, dns_dbversion_t *version,
++			  dns_hash_t *hash, uint8_t *flags,
++			  uint16_t *iterations, unsigned char *salt,
++			  size_t *salt_length);
++/*%<
++ * Get the NSEC3 parameters that are associated with this zone.
++ *
++ * Requires:
++ * \li	'db' is a valid zone database.
++ *
++ * Returns:
++ * \li	#ISC_R_SUCCESS
++ * \li	#ISC_R_NOTFOUND - the DB implementation does not support this feature
++ *			  or this zone does not have NSEC3 records.
++ */
++
++isc_result_t
+ dns_db_getsize(dns_db_t *db, dns_dbversion_t *version, uint64_t *records,
+ 	       uint64_t *xfrsize);
+ /*%<
+@@ -1816,6 +1833,21 @@
+  * \li	#ISC_R_NOTIMPLEMENTED - Not supported by this DB implementation.
+  */
+ 
++isc_result_t
++dns_db_setgluecachestats(dns_db_t *db, isc_stats_t *stats);
++/*%<
++ * Set the location in which to collect glue cache statistics.
++ * This option may not exist depending on the DB implementation.
++ *
++ * Requires:
++ *
++ * \li	'db' is a valid database (cache only).
++ *
++ * Returns:
++ * \li	when available, a pointer to a statistics object created by
++ *	dns_rdatasetstats_create(); otherwise NULL.
++ */
++
+ void
+ dns_db_locknode(dns_db_t *db, dns_dbnode_t *node, isc_rwlocktype_t type);
+ void
+--- a/lib/dns/include/dns/dnssec.h
++++ b/lib/dns/include/dns/dnssec.h
+@@ -18,6 +18,7 @@
+ #include <stdbool.h>
+ 
+ #include <isc/lang.h>
++#include <isc/stats.h>
+ #include <isc/stdtime.h>
+ 
+ #include <dns/diff.h>
+@@ -28,6 +29,8 @@
+ 
+ ISC_LANG_BEGINDECLS
+ 
++extern isc_stats_t *dns_dnssec_stats;
++
+ /*%< Maximum number of keys supported in a zone. */
+ #define DNS_MAXZONEKEYS 32
+ 
+--- a/lib/dns/include/dns/tkey.h
++++ b/lib/dns/include/dns/tkey.h
+@@ -23,18 +23,21 @@
+ #include <dns/types.h>
+ 
+ #include <dst/dst.h>
++#include <dst/gssapi.h>
+ 
+ ISC_LANG_BEGINDECLS
+ 
+ /* Key agreement modes */
+ #define DNS_TKEYMODE_SERVERASSIGNED   1
+ #define DNS_TKEYMODE_DIFFIEHELLMAN    2
++#define DNS_TKEYMODE_GSSAPI	      3
+ #define DNS_TKEYMODE_RESOLVERASSIGNED 4
+ #define DNS_TKEYMODE_DELETE	      5
+ 
+ struct dns_tkeyctx {
+ 	dns_gss_cred_id_t gsscred;
+ 	isc_mem_t	 *mctx;
++	char		 *gssapi_keytab;
+ };
+ 
+ isc_result_t
+--- a/lib/dns/include/dns/types.h
++++ b/lib/dns/include/dns/types.h
+@@ -33,8 +33,21 @@
+ typedef struct dns_acl	       dns_acl_t;
+ typedef struct dns_aclelement  dns_aclelement_t;
+ typedef struct dns_aclenv      dns_aclenv_t;
++typedef struct dns_adb	       dns_adb_t;
++typedef struct dns_adbaddrinfo dns_adbaddrinfo_t;
++typedef ISC_LIST(dns_adbaddrinfo_t) dns_adbaddrinfolist_t;
++typedef struct dns_adbentry dns_adbentry_t;
++typedef struct dns_adbfind  dns_adbfind_t;
++typedef ISC_LIST(dns_adbfind_t) dns_adbfindlist_t;
+ typedef struct dns_badcache	       dns_badcache_t;
+ typedef struct dns_byaddr	       dns_byaddr_t;
++typedef struct dns_catz_zonemodmethods dns_catz_zonemodmethods_t;
++typedef struct dns_catz_entry_options  dns_catz_options_t;
++typedef struct dns_catz_entry	       dns_catz_entry_t;
++typedef struct dns_catz_coo	       dns_catz_coo_t;
++typedef struct dns_catz_zone	       dns_catz_zone_t;
++typedef struct dns_catz_changed	       dns_catz_changed_t;
++typedef struct dns_catz_zones	       dns_catz_zones_t;
+ typedef struct dns_client	       dns_client_t;
+ typedef void			       dns_clientrestrans_t;
+ typedef void			       dns_clientreqtrans_t;
+@@ -51,7 +64,11 @@
+ typedef void			       dns_dbnode_t;
+ typedef struct dns_dbonupdatelistener  dns_dbonupdatelistener_t;
+ typedef void			       dns_dbversion_t;
++typedef struct dns_dlzimplementation   dns_dlzimplementation_t;
++typedef struct dns_dlzdb	       dns_dlzdb_t;
++typedef ISC_LIST(dns_dlzdb_t) dns_dlzdblist_t;
+ typedef struct dns_dyndbctx	      dns_dyndbctx_t;
++typedef struct dns_sdlzimplementation dns_sdlzimplementation_t;
+ typedef struct dns_decompress	      dns_decompress_t;
+ typedef struct dns_dispatch	      dns_dispatch_t;
+ typedef struct dns_dispatchlist	      dns_dispatchlist_t;
+@@ -161,6 +178,8 @@
+ typedef struct dns_zt	     dns_zt_t;
+ typedef struct dns_ipkeylist dns_ipkeylist_t;
+ 
++typedef struct dst_gssapi_signverifyctx dst_gssapi_signverifyctx_t;
++
+ typedef enum { dns_hash_sha1 = 1 } dns_hash_t;
+ 
+ typedef enum {
+@@ -439,4 +458,18 @@
+ 
+ typedef int (*dns_rdatasetorderfunc_t)(const dns_rdata_t *, const void *);
+ 
++typedef bool (*dns_checkmxfunc_t)(dns_zone_t *, const dns_name_t *,
++				  const dns_name_t *);
++
++typedef bool (*dns_checksrvfunc_t)(dns_zone_t *, const dns_name_t *,
++				   const dns_name_t *);
++
++typedef bool (*dns_checknsfunc_t)(dns_zone_t *, const dns_name_t *,
++				  const dns_name_t *, dns_rdataset_t *,
++				  dns_rdataset_t *);
++
++typedef bool (*dns_isselffunc_t)(dns_view_t *, dns_tsigkey_t *,
++				 const isc_sockaddr_t *, const isc_sockaddr_t *,
++				 dns_rdataclass_t, void *);
++
+ typedef void (*dns_nseclog_t)(void *val, int, const char *, ...);
+--- a/lib/dns/include/dst/dst.h
++++ b/lib/dns/include/dst/dst.h
+@@ -28,6 +28,8 @@
+ #include <dns/secalg.h>
+ #include <dns/types.h>
+ 
++#include <dst/gssapi.h>
++
+ ISC_LANG_BEGINDECLS
+ 
+ /***
+@@ -101,6 +103,7 @@
+ 	 */
+ 	DST_ALG_HMACMD5 = 157,
+ 	DST_ALG_HMAC_FIRST = DST_ALG_HMACMD5,
++	DST_ALG_GSSAPI = 160,	  /* Internal use only. Exception. */
+ 	DST_ALG_HMACSHA1 = 161,	  /* XXXMPA */
+ 	DST_ALG_HMACSHA224 = 162, /* XXXMPA */
+ 	DST_ALG_HMACSHA256 = 163, /* XXXMPA */
+@@ -486,6 +489,23 @@
+  */
+ 
+ isc_result_t
++dst_key_tofile(const dst_key_t *key, int type, const char *directory);
++/*%<
++ * Writes a key to permanent storage.  The key can either be a public or
++ * private key.  Public keys are written in DNS format and private keys
++ * are written as a set of base64 encoded values.  If directory is NULL,
++ * the current directory is assumed.
++ *
++ * Requires:
++ * \li	"key" is a valid key.
++ * \li	"type" is DST_TYPE_PUBLIC, DST_TYPE_PRIVATE, or the bitwise union
++ *
++ * Returns:
++ * \li	ISC_R_SUCCESS
++ * \li	any other result indicates failure
++ */
++
++isc_result_t
+ dst_key_fromdns_ex(const dns_name_t *name, dns_rdataclass_t rdclass,
+ 		   isc_buffer_t *source, isc_mem_t *mctx, bool no_rdata,
+ 		   dst_key_t **keyp);
+@@ -586,6 +606,40 @@
+  *\li	If successful, key will contain a valid private key.
+  */
+ 
++dns_gss_ctx_id_t
++dst_key_getgssctx(const dst_key_t *key);
++/*%<
++ * Returns the opaque key data.
++ * Be cautions when using this value unless you know what you are doing.
++ *
++ * Requires:
++ *\li	"key" is not NULL.
++ *
++ * Returns:
++ *\li	gssctx key data, possibly NULL.
++ */
++
++isc_result_t
++dst_key_fromgssapi(const dns_name_t *name, dns_gss_ctx_id_t gssctx,
++		   isc_mem_t *mctx, dst_key_t **keyp, isc_region_t *intoken);
++/*%<
++ * Converts a GSSAPI opaque context id into a DST key.
++ *
++ * Requires:
++ *\li	"name" is a valid absolute dns name.
++ *\li	"gssctx" is a GSSAPI context id.
++ *\li	"mctx" is a valid memory context.
++ *\li	"keyp" is not NULL and "*keyp" is NULL.
++ *
++ * Returns:
++ *\li 	ISC_R_SUCCESS
++ * \li	any other result indicates failure
++ *
++ * Ensures:
++ *\li	If successful, *keyp will contain a valid key and be responsible for
++ *	the context id.
++ */
++
+ #ifdef DST_KEY_INTERNAL
+ isc_result_t
+ dst_key_buildinternal(const dns_name_t *name, unsigned int alg,

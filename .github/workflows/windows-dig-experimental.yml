@@ -90,6 +90,8 @@ jobs:
           patch --batch -p1 < ../windows/port-9.20.30-stage2.patch
           # Include time/string CRT adapters only in the files that use them.
           patch --batch -p1 < ../windows/port-9.20.30-stage3.patch
+          # Retain upstream 9.20 type declarations required by newer DNS modules.
+          patch --batch -p1 < ../windows/port-9.20.30-stage4.patch
       - name: Cross-configure and compile
         run: |
           cd bind-9.20.30
