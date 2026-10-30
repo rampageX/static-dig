@@ -41,7 +41,9 @@ jobs:
           cd userspace-rcu-0.15.7
           sed -i 's/defined(__CYGWIN__) || defined(__APPLE__)/defined(__MINGW32__) || defined(__CYGWIN__) || defined(__APPLE__)/' include/urcu/syscall-compat.h
           patch --batch -p1 < ../windows/urcu-compat/win32-signals.patch
-          export CFLAGS="-O2 -I${GITHUB_WORKSPACE}/windows/urcu-compat"
+          # Avoid LLP64 pointer truncation in the lock-free hash table.
+          sed -i 's/(unsigned long) node/(uintptr_t) node/g' src/rculfhash.c
+          export CFLAGS="-O2 -I${GITHUB_WORKSPACE}/windows/urcu-compat -include ${GITHUB_WORKSPACE}/windows/urcu-compat/win32-posix.h"
           ./configure --host=x86_64-w64-mingw32 --prefix=/ucrt64 --enable-static --disable-shared --enable-compiler-atomic-builtins
           # dig links only the standard RCU and CDS libraries; omit the
           # bulletproof/signal flavors that require POSIX signal sets.
